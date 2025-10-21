@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 import importlib.util
 import os
 
@@ -77,25 +77,7 @@ print("Version:", version)
 setup(
     name="exllamav3",
     version=version,
-    packages=[
-        "exllamav3",
-        "exllamav3.exllamav3_ext",
-        "exllamav3.generator",
-        "exllamav3.generator.sampler",
-        "exllamav3.generator.filter",
-        "exllamav3.conversion",
-        "exllamav3.conversion.standard_cal_data",
-        "exllamav3.integration",
-        "exllamav3.architecture",
-        "exllamav3.model",
-        "exllamav3.modules",
-        "exllamav3.modules.quant",
-        "exllamav3.modules.quant.exl3_lib",
-        "exllamav3.tokenizer",
-        "exllamav3.cache",
-        "exllamav3.loader",
-        "exllamav3.util",
-    ],
+    packages=find_packages(),
     url="https://github.com/turboderp/exllamav3",
     license="MIT",
     author="turboderp",
