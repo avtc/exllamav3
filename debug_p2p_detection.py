@@ -24,10 +24,9 @@ def test_pytorch_p2p_detection(devices):
                 continue
                 
             try:
-                with torch.cuda.device(device_i):
-                    can_access = torch.cuda.can_device_access_peer(device_j)
-                    p2p_matrix[i][j] = can_access
-                    print(f"  PyTorch: Device {device_i} can access device {device_j}: {can_access}")
+                can_access = torch.cuda.can_device_access_peer(device_i, device_j)
+                p2p_matrix[i][j] = can_access
+                print(f"  PyTorch: Device {device_i} can access device {device_j}: {can_access}")
             except Exception as e:
                 print(f"  PyTorch: Error checking {device_i} -> {device_j}: {e}")
                 p2p_matrix[i][j] = False
