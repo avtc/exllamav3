@@ -186,14 +186,13 @@ class P2PTopology:
                         
                     try:
                         # Use PyTorch to check P2P capability
-                        with torch.cuda.device(device_i):
-                            can_access = torch.cuda.can_device_access_peer(device_j)
-                            if can_access:
-                                self.p2p_matrix[i][j] = True
-                                any_p2p_detected = True
-                                log_tp(device_i, f"P2P: PyTorch confirms access to device {device_j}")
-                            else:
-                                log_tp(device_i, f"P2P: PyTorch denies access to device {device_j}")
+                        can_access = torch.cuda.can_device_access_peer(device_i, device_j)
+                        if can_access:
+                            self.p2p_matrix[i][j] = True
+                            any_p2p_detected = True
+                            log_tp(device_i, f"P2P: PyTorch confirms access to device {device_j}")
+                        else:
+                            log_tp(device_i, f"P2P: PyTorch denies access to device {device_j}")
                     except Exception as e:
                         log_tp(device_i, f"P2P: PyTorch detection error for device {device_j}: {e}")
                         
