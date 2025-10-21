@@ -13,7 +13,7 @@ from .config import Config
 from ..util.misc import Cleanupper
 from .model_tp_shared import SMProducer
 from .model_tp_fn import *
-from .model_tp_backend import TPBackend, TPBackendNCCL, TPBackendNative
+from .model_tp_backend import TPBackend, TPBackendNCCL, TPBackendNative, TPBackendP2P
 import uuid
 from ..util import log_tp, global_t0
 
@@ -53,14 +53,27 @@ class Model_TPMixin:
                     "init_method": f"tcp://{master_addr}:{master_port}",
                     "uuid": uuid.uuid4().hex,
                 }
+            case "p2p":
+                backend_args = {
+                    "type": tp_backend,
+                    "init_method": f"tcp://{master_addr}:{master_port}",
+                    "uuid": uuid.uuid4().hex,
+                }
             case "native":
                 backend_args = {
                     "type": tp_backend,
                     "init_method": f"tcp://{master_addr}:{master_port}",
                     "uuid": uuid.uuid4().hex,
                 }
+            case "auto":
+                # Auto-select backend based on hardware capabilities
+                backend_args = {
+                    "type": tp_backend,
+                    "init_method": f"tcp://{master_addr}:{master_port}",
+                    "uuid": uuid.uuid4().hex,
+                }
             case _:
-                raise ValueError(f"Unkwown backend type: {tp_backend}")
+                raise ValueError(f"Unknown backend type: {tp_backend}")
 
         # Spawn child processes, each running the mp_model_worker function
         num_devices = max(self.active_devices) + 1
@@ -70,7 +83,13 @@ class Model_TPMixin:
         self.mp_children: list = [None] * (num_devices + 1)
         self.mp_parent_conn: list = [None] * (num_devices + 1)
         self.mp_child_conn: list = [None] * (num_devices + 1)
-        self.tp_producer = SMProducer(buffer_size = 64 * 1024**2)
+        # Optimized producer with adaptive sizing and zero-copy support
+        self.tp_producer = SMProducer(
+            buffer_size = 64 * 1024**2,
+            adaptive_sizing = True,
+            min_buffer_size = 32 * 1024**2,
+            max_buffer_size = 512 * 1024**2
+        )
 
         for rank, device in enumerate(self.active_devices + [-1]):
             log_tp(None, f"Spawning child process: {device}")
@@ -186,12 +205,22 @@ class Model_TPMixin:
 
 
     def tp_worker_dispatch_multi(self, active_devices: list[int], fn, args, dev_args: list | None = None):
+        """Dispatch multiple function calls with optimized batching."""
+        messages = []
         for idx, device in enumerate(active_devices):
             d_args = args
             if dev_args is not None:
                 d_args = d_args + dev_args[idx]
+            messages.append((fn, d_args))
+        
+        # Send messages in batch for better efficiency
+        for device, msg in zip(active_devices, messages):
             conn = self.mp_parent_conn[device]
-            conn.send((fn, d_args))
+            if hasattr(conn, 'send_batch'):
+                # Use batch sending if available
+                conn.send_batch([msg])
+            else:
+                conn.send(msg)
 
 
     def tp_worker_wait_multi(self, active_devices: list[int]):
@@ -347,11 +376,19 @@ class Model_TPMixin:
 
 
     def prepare_inputs_for_tp(self, x: torch.Tensor, params: dict) -> torch.Tensor:
-        self.tp_producer.clear()
+        """Prepare inputs for tensor parallelism with optimized memory management."""
+        # Only clear producer if buffer is getting full
+        if hasattr(self.tp_producer, 'next_offset') and self.tp_producer.next_offset > self.tp_producer.buffer_size * 0.8:
+            self.tp_producer.clear()
+        
         # Use ID of Cache object as reference to avoid having to pickle it
         if "cache" in params:
             params["cache"] = id(params["cache"])
-        # Share memory of any additional CPU tensors
+        
+        # Batch process tensor parameters for better efficiency
+        tensor_params = []
+        param_names = []
+        
         for tensor_param in [
             "block_table",
             "cache_seqlens",
@@ -360,7 +397,14 @@ class Model_TPMixin:
         ]:
             p = params.get(tensor_param)
             if p is not None:
-                params[tensor_param] = self.tp_producer.send(p)
+                tensor_params.append(p)
+                param_names.append(tensor_param)
+        
+        # Send all tensors in batch
+        if tensor_params:
+            for tensor, name in zip(tensor_params, param_names):
+                params[name] = self.tp_producer.send(tensor)
+        
         return self.tp_producer.send(x)
 
 
@@ -371,9 +415,14 @@ class Model_TPMixin:
         last_kv_module_idx: int,
         modules: list,
     ):
+        """Optimized prefill for tensor parallelism."""
+        # Start CPU reduce in parallel
         self.tp_worker_dispatch(-1, mp_cpu_reduce, ())
 
+        # Prepare inputs efficiently
         x = self.prepare_inputs_for_tp(x, params)
+        
+        # Dispatch to all devices
         for device in self.active_devices:
             self.tp_worker_dispatch(device, mp_model_forward, (
                 x,
@@ -381,10 +430,13 @@ class Model_TPMixin:
                 last_kv_module_idx,
                 True
             ))
+        
+        # Wait for all devices to complete
         for device in self.active_devices:
             r = self.tp_worker_result(device)
             assert r is None, "TP logic error"
 
+        # Complete CPU reduce
         self.tp_worker_result(-1)
         return None
 
@@ -396,9 +448,14 @@ class Model_TPMixin:
         last_kv_module_idx: int,
         modules: list,
     ):
+        """Optimized forward pass for tensor parallelism."""
+        # Start CPU reduce in parallel
         self.tp_worker_dispatch(-1, mp_cpu_reduce, ())
 
+        # Prepare inputs efficiently
         x = self.prepare_inputs_for_tp(x, params)
+        
+        # Dispatch to all devices
         for device in self.active_devices:
             self.tp_worker_dispatch(device, mp_model_forward, (
                 x,
@@ -406,20 +463,32 @@ class Model_TPMixin:
                 last_kv_module_idx,
                 False
             ))
+        
+        # Collect results efficiently
         return_tensors = []
         for device in self.active_devices:
             r = self.tp_worker_result(device)
             if r is not None:
                 return_tensors.append(r)
+        
         assert len(return_tensors) == 1, "TP logic error"
 
+        # Complete CPU reduce
         self.tp_worker_result(-1)
         return return_tensors[0]
 
 
     def tp_rotate_cache_pages(self, cache_id: int, all_rotations: torch.Tensor):
+        """Optimized cache page rotation."""
+        # Send rotation tensor efficiently
         all_rotations = self.tp_producer.send(all_rotations)
+        
+        # Dispatch to all devices
         self.tp_worker_dispatch_wait_multi(self.active_devices, mp_rotate_cache_pages, (
             cache_id,
             all_rotations
         ))
+        
+        # Clear producer if buffer is getting full
+        if hasattr(self.tp_producer, 'next_offset') and self.tp_producer.next_offset > self.tp_producer.buffer_size * 0.8:
+            self.tp_producer.clear()

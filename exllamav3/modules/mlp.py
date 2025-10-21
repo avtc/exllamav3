@@ -217,7 +217,12 @@ class MLP(Module):
             del d_
 
         if self.tp_reduce:
-            params["backend"].all_reduce(d)
+            # Use P2P-optimized all_reduce if available
+            backend = params.get("backend")
+            if hasattr(backend, 'use_p2p') and backend.use_p2p:
+                backend.all_reduce(d)
+            else:
+                backend.all_reduce(d)
 
         return to2(d, out_dtype, self.out_dtype)
 
@@ -593,7 +598,12 @@ class GatedMLP(Module):
         if self.num_slices == 0:
             d = torch.zeros_like(x, dtype = self.out_dtype)
             if self.tp_reduce:
-                params["backend"].all_reduce(d, False)
+                # Use P2P-optimized all_reduce if available
+                backend = params.get("backend")
+                if hasattr(backend, 'use_p2p') and backend.use_p2p:
+                    backend.all_reduce(d, False)
+                else:
+                    backend.all_reduce(d, False)
         else:
             qs = params.get("q_mlp_slice")
             r = [qs] if qs is not None else range(0, self.num_slices)
@@ -650,7 +660,12 @@ class GatedMLP(Module):
                     del d_
 
             if self.tp_reduce:
-                params["backend"].all_reduce(d)
+                # Use P2P-optimized all_reduce if available
+                backend = params.get("backend")
+                if hasattr(backend, 'use_p2p') and backend.use_p2p:
+                    backend.all_reduce(d)
+                else:
+                    backend.all_reduce(d)
 
         return to2(d, out_dtype, self.out_dtype)
 

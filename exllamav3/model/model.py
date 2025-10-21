@@ -214,7 +214,7 @@ class Model(Model_TPMixin, Model_LSMixin):
             }
 
         :param tp_backend:
-            str, either "nccl" (default) or "native"
+            str, either "native" (default), "nccl", "p2p", or "auto"
 
         :param verbose:
             bool, more info while loading including full TP split

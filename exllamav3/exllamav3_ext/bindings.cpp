@@ -41,6 +41,12 @@
 #include "parallel/barrier.cuh"
 #include "parallel/gather.cuh"
 #include "parallel/all_reduce.cuh"
+#include "parallel/p2p_broadcast.cuh"
+#include "parallel/p2p_all_reduce.cuh"
+#include "parallel/p2p_gather.cuh"
+#include "parallel/p2p_memory.cuh"
+#include "parallel/p2p_tree_reduce.cuh"
+#include "parallel/p2p_direct_memory.cuh"
 
 #include "libtorch/gated_delta_net.h"
 #include "libtorch/linear.h"
@@ -77,6 +83,65 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("pg_all_reduce_cpu", &pg_all_reduce_cpu, "pg_all_reduce_cpu");
     m.def("run_cpu_reduce_jobs", &run_cpu_reduce_jobs, "run_cpu_reduce_jobs");
     m.def("end_cpu_reduce_jobs", &end_cpu_reduce_jobs, "end_cpu_reduce_jobs");
+    
+    // P2P functions
+    m.def("p2p_broadcast", &p2p_broadcast, "p2p_broadcast");
+    m.def("p2p_broadcast_ll", &p2p_broadcast_ll, "p2p_broadcast_ll");
+    m.def("p2p_all_reduce", &p2p_all_reduce, "p2p_all_reduce");
+    m.def("p2p_all_reduce_ring", &p2p_all_reduce_ring, "p2p_all_reduce_ring");
+    m.def("p2p_all_reduce_tree_adaptive", &p2p_all_reduce_tree_adaptive, "p2p_all_reduce_tree_adaptive");
+    m.def("p2p_gather", &p2p_gather, "p2p_gather");
+    m.def("p2p_gather_direct", &p2p_gather_direct, "p2p_gather_direct");
+    m.def("p2p_init_memory_pool", &p2p_init_memory_pool, "p2p_init_memory_pool");
+    m.def("p2p_cleanup_memory_pool", &p2p_cleanup_memory_pool, "p2p_cleanup_memory_pool");
+    m.def("p2p_allocate_from_pool", &p2p_allocate_from_pool, "p2p_allocate_from_pool");
+    m.def("p2p_free_to_pool", &p2p_free_to_pool, "p2p_free_to_pool");
+    m.def("p2p_get_peer_device_ptr", &p2p_get_peer_device_ptr, "p2p_get_peer_device_ptr");
+    m.def("p2p_can_access_peer", &p2p_can_access_peer, "p2p_can_access_peer");
+    m.def("p2p_device_barrier", &p2p_device_barrier, "p2p_device_barrier");
+    
+    // Direct memory access functions
+    m.def("p2p_copy_tensor_async", &p2p_copy_tensor_async, "p2p_copy_tensor_async");
+    m.def("p2p_copy_tensor_sync", &p2p_copy_tensor_sync, "p2p_copy_tensor_sync");
+    m.def("p2p_copy_tensor_batch", &p2p_copy_tensor_batch, "p2p_copy_tensor_batch");
+    m.def("p2p_copy_tensor_pinned", &p2p_copy_tensor_pinned, "p2p_copy_tensor_pinned");
+    m.def("p2p_copy_tensor_2d_async", &p2p_copy_tensor_2d_async, "p2p_copy_tensor_2d_async");
+    m.def("p2p_copy_tensor_3d_async", &p2p_copy_tensor_3d_async, "p2p_copy_tensor_3d_async");
+    m.def("p2p_copy_tensor_with_offset", &p2p_copy_tensor_with_offset, "p2p_copy_tensor_with_offset");
+    m.def("p2p_copy_tensor_strided", &p2p_copy_tensor_strided, "p2p_copy_tensor_strided");
+    
+    // Memory registration functions
+    m.def("p2p_register_memory_region", &p2p_register_memory_region, "p2p_register_memory_region");
+    m.def("p2p_unregister_memory_region", &p2p_unregister_memory_region, "p2p_unregister_memory_region");
+    m.def("p2p_is_memory_registered", &p2p_is_memory_registered, "p2p_is_memory_registered");
+    
+    // Zero-copy memory operations
+    m.def("p2p_allocate_zero_copy", &p2p_allocate_zero_copy, "p2p_allocate_zero_copy");
+    m.def("p2p_free_zero_copy", &p2p_free_zero_copy, "p2p_free_zero_copy");
+    
+    // Performance monitoring functions
+    m.def("p2p_measure_bandwidth", &p2p_measure_bandwidth, "p2p_measure_bandwidth");
+    m.def("p2p_measure_latency", &p2p_measure_latency, "p2p_measure_latency");
+    
+    // Memory access validation
+    m.def("p2p_validate_memory_access", &p2p_validate_memory_access, "p2p_validate_memory_access");
+    
+    // Synchronization functions
+    m.def("p2p_synchronize_devices", &p2p_synchronize_devices, "p2p_synchronize_devices");
+    m.def("p2p_enable_peer_access", &p2p_enable_peer_access, "p2p_enable_peer_access");
+    m.def("p2p_disable_peer_access", &p2p_disable_peer_access, "p2p_disable_peer_access");
+    m.def("p2p_is_peer_access_enabled", &p2p_is_peer_access_enabled, "p2p_is_peer_access_enabled");
+    
+    // Enhanced direct memory pool functions
+    m.def("p2p_init_direct_memory_pool", &p2p_init_direct_memory_pool, "p2p_init_direct_memory_pool");
+    m.def("p2p_cleanup_direct_memory_pool", &p2p_cleanup_direct_memory_pool, "p2p_cleanup_direct_memory_pool");
+    m.def("p2p_allocate_from_direct_pool", &p2p_allocate_from_direct_pool, "p2p_allocate_from_direct_pool");
+    m.def("p2p_free_to_direct_pool", &p2p_free_to_direct_pool, "p2p_free_to_direct_pool");
+    m.def("p2p_can_access_peer_direct", &p2p_can_access_peer_direct, "p2p_can_access_peer_direct");
+    m.def("p2p_register_peer_memory", &p2p_register_peer_memory, "p2p_register_peer_memory");
+    m.def("p2p_unregister_peer_memory", &p2p_unregister_peer_memory, "p2p_unregister_peer_memory");
+    m.def("p2p_get_direct_pool_usage", &p2p_get_direct_pool_usage, "p2p_get_direct_pool_usage");
+    m.def("p2p_get_direct_pool_size", &p2p_get_direct_pool_size, "p2p_get_direct_pool_size");
 
     m.def("quantize_tiles", &quantize_tiles, "quantize_tiles");
     m.def("test_distribution", &test_distribution, "test_distribution");

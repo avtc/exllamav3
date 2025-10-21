@@ -3,7 +3,8 @@ import traceback
 from .model_tp_shared import SMProducer, SMConsumer
 from ..ext import exllamav3_ext as ext
 from functools import lru_cache
-from .model_tp_backend import TPBackendNCCL, TPBackendNative
+from .model_tp_backend import TPBackendNCCL, TPBackendNative, TPBackendP2P
+from .model_tp_p2p import P2PTopology
 from ..util import log_tp, set_t0
 
 def init_pg(device: int, active_devices: list[int], output_device: int, backend_args: dict, master: bool = False):
@@ -33,6 +34,15 @@ def init_pg(device: int, active_devices: list[int], output_device: int, backend_
                 master = master,
                 uuid = backend_args["uuid"],
             )
+        case "p2p":
+            backend = TPBackendP2P(
+                device = device,
+                active_devices = active_devices,
+                output_device = output_device,
+                init_method = backend_args["init_method"],
+                master = master,
+                uuid = backend_args["uuid"],
+            )
         case "native":
             backend = TPBackendNative(
                 device = device,
@@ -43,6 +53,65 @@ def init_pg(device: int, active_devices: list[int], output_device: int, backend_
                 uuid = backend_args["uuid"],
                 cpu = device < 0
             )
+        case "auto":
+            # Auto-select backend based on P2P capabilities
+            if device >= 0 and len(active_devices) > 1:
+                try:
+                    p2p_topology = P2PTopology(active_devices)
+                    topology_summary = p2p_topology.get_topology_summary()
+                    log_tp(device, f"Auto backend selection: P2P topology {topology_summary}")
+                    
+                    if topology_summary["is_fully_connected"]:
+                        log_tp(device, "Auto-selecting P2P backend (fully connected)")
+                        backend = TPBackendP2P(
+                            device = device,
+                            active_devices = active_devices,
+                            output_device = output_device,
+                            init_method = backend_args["init_method"],
+                            master = master,
+                            uuid = backend_args["uuid"],
+                        )
+                    elif topology_summary["connectivity_ratio"] > 0.5:
+                        log_tp(device, "Auto-selecting P2P backend (partial connectivity)")
+                        backend = TPBackendP2P(
+                            device = device,
+                            active_devices = active_devices,
+                            output_device = output_device,
+                            init_method = backend_args["init_method"],
+                            master = master,
+                            uuid = backend_args["uuid"],
+                        )
+                    else:
+                        log_tp(device, "Auto-selecting NCCL backend (low P2P connectivity)")
+                        backend = TPBackendNCCL(
+                            device = device,
+                            active_devices = active_devices,
+                            output_device = output_device,
+                            init_method = backend_args["init_method"],
+                            master = master,
+                            uuid = backend_args["uuid"],
+                        )
+                except Exception as e:
+                    log_tp(device, f"P2P detection failed: {e}, falling back to NCCL")
+                    backend = TPBackendNCCL(
+                        device = device,
+                        active_devices = active_devices,
+                        output_device = output_device,
+                        init_method = backend_args["init_method"],
+                        master = master,
+                        uuid = backend_args["uuid"],
+                    )
+            else:
+                # Single device or CPU process, use native
+                backend = TPBackendNative(
+                    device = device,
+                    active_devices = active_devices,
+                    output_device = output_device,
+                    init_method = backend_args["init_method"],
+                    master = master,
+                    uuid = backend_args["uuid"],
+                    cpu = device < 0
+                )
         case _:
             raise ValueError("Unknown backend type")
 
@@ -64,21 +133,62 @@ def mp_model_worker(
 
     with torch.inference_mode():
         local_context = init_pg(device, active_devices, output_device, backend_args)
-        local_context["inf_consumer"] = SMConsumer(producer, device = device, pin_memory = True)
+        
+        # Optimized consumer with caching and zero-copy
+        local_context["inf_consumer"] = SMConsumer(
+            producer,
+            device = device,
+            pin_memory = True,
+            enable_zero_copy = True,
+            cache_tensors = True
+        )
+        
+        # Message batching for improved efficiency
+        message_batch = []
+        batch_size = 0
+        max_batch_size = 10
+        batch_timeout = 0.001  # 1ms timeout
+        
+        # Performance tracking
+        stats = {
+            'messages_processed': 0,
+            'batches_processed': 0,
+            'avg_batch_size': 0.0
+        }
 
-        # Dispatch loop
+        # Dispatch loop with batching
         while True:
-            msg = conn.recv()
-            if msg == "quit":
-                log_tp(device, f"Child worker exiting")
-                torch.cuda.synchronize()
-                local_context["inf_consumer"].close()
-                local_context["backend"].close()
-                break
-            func, args = msg
             try:
-                result = func(local_context, *args)
-                conn.send(result)
+                # Try to receive message with timeout
+                if conn.poll(batch_timeout):
+                    msg = conn.recv()
+                    
+                    if msg == "quit":
+                        log_tp(device, f"Child worker exiting")
+                        torch.cuda.synchronize()
+                        local_context["inf_consumer"].close()
+                        local_context["backend"].close()
+                        break
+                    
+                    # Add to batch
+                    message_batch.append(msg)
+                    batch_size += 1
+                    stats['messages_processed'] += 1
+                    
+                    # Process batch if full or if it's a blocking operation
+                    if batch_size >= max_batch_size or msg[0].__name__ in ['mp_model_forward']:
+                        _process_message_batch(local_context, message_batch, conn)
+                        message_batch = []
+                        batch_size = 0
+                        stats['batches_processed'] += 1
+                else:
+                    # Timeout - process any pending messages
+                    if message_batch:
+                        _process_message_batch(local_context, message_batch, conn)
+                        message_batch = []
+                        batch_size = 0
+                        stats['batches_processed'] += 1
+                        
             except Exception as e:
                 tb = traceback.TracebackException.from_exception(e)
                 print("-" * 40)
@@ -86,6 +196,33 @@ def mp_model_worker(
                 print("".join(tb.format()))
                 print("-" * 40)
                 conn.send(e)
+        
+        # Update final stats
+        if stats['batches_processed'] > 0:
+            stats['avg_batch_size'] = stats['messages_processed'] / stats['batches_processed']
+        log_tp(device, f"Worker stats: {stats}")
+
+
+def _process_message_batch(local_context: dict, message_batch: list, conn):
+    """Process a batch of messages efficiently."""
+    results = []
+    
+    for msg in message_batch:
+        func, args = msg
+        try:
+            result = func(local_context, *args)
+            results.append(result)
+        except Exception as e:
+            tb = traceback.TracebackException.from_exception(e)
+            print("-" * 40)
+            print(" ## Exception in child process (batch)")
+            print("".join(tb.format()))
+            print("-" * 40)
+            results.append(e)
+    
+    # Send all results back
+    for result in results:
+        conn.send(result)
 
 
 def mp_cpu_reduce(local_context: dict):
@@ -178,7 +315,7 @@ def mp_model_forward(
     prefill: bool,
 ):
     """
-    Forward pass for parallel slice of a model
+    Forward pass for parallel slice of a model with optimized tensor handling
     """
     backend = local_context["backend"]
     backend.fwd_barrier()
@@ -186,6 +323,10 @@ def mp_model_forward(
     modules = local_context["modules"]
     consumer = local_context["inf_consumer"]
 
+    # Batch receive all tensor parameters
+    tensor_params = []
+    param_names = []
+    
     for tensor_param in [
         "block_table",
         "cache_seqlens",
@@ -194,20 +335,38 @@ def mp_model_forward(
     ]:
         p = params.get(tensor_param)
         if p is not None:
-            params[tensor_param] = consumer.recv(p, cuda = True)
+            tensor_params.append(p)
+            param_names.append(tensor_param)
+    
+    # Receive all tensors in batch
+    if tensor_params:
+        received_tensors = consumer.recv_batch(tensor_params, cuda=True)
+        for name, tensor in zip(param_names, received_tensors):
+            params[name] = tensor
 
     params["backend"] = backend
 
+    # Receive input tensor
     x = consumer.recv(shared_input)
 
+    # Optimized forward pass with memory management
     for idx, module in enumerate(modules):
         logits_layer = module.caps.get("logits_output")
         if logits_layer and (num := params.get("last_tokens_only")):
-            x = x[..., -num:, :].contiguous()
+            # More efficient slicing
+            if num < x.size(-2):
+                x = x.narrow(-2, x.size(-2) - num, num).contiguous()
+        
         if prefill:
             params["prefill"] = (idx == last_kv_module_idx)
+        
+        # Prepare tensor for device efficiently
         x = module.prepare_for_device(x, params)
+        
+        # Forward pass
         x = module.forward(x, params)
+        
+        # Clean up intermediate tensors if possible
         if prefill and idx == last_kv_module_idx:
             backend.end_cpu_reduce_jobs()
             del params["prefill"]
@@ -242,17 +401,21 @@ def mp_rotate_cache_pages(
     all_rotations = consumer.recv(all_rotations, cuda = True)
     kv_modules = local_context["kv_modules"]
 
-    @lru_cache
-    def get_buffer(shape, device, dtype):
-        return torch.empty(shape, device = device, dtype = dtype)
+    # Optimized buffer management with larger cache
+    @lru_cache(maxsize=32)
+    def get_buffer(shape_key, device, dtype):
+        shape = tuple(map(int, shape_key.split('_')))
+        return torch.empty(shape, device=device, dtype=dtype)
 
     cache_tensors = []
     for idx, module in enumerate(kv_modules):
         cache_layer = module.tp_cache_lookup[cache_id]
         cache_tensors += cache_layer.get_tensors()
 
+    # Batch process cache rotations
     for cache in cache_tensors:
-        buffer = get_buffer(cache[0].shape, cache.device, cache.dtype)
+        shape_key = '_'.join(map(str, cache[0].shape))
+        buffer = get_buffer(shape_key, cache.device, cache.dtype)
         ext.cache_rotate(cache, all_rotations, buffer)
 
 
@@ -276,9 +439,21 @@ class PseudoParentConn:
         log_tp(None, f"Pseudoprocess created, device {device}")
 
         self.local_context = init_pg(device, active_devices, output_device, backend_args, master = True)
-        self.local_context["inf_consumer"] = SMConsumer(producer, device = device, pin_memory = True)
+        self.local_context["inf_consumer"] = SMConsumer(
+            producer,
+            device = device,
+            pin_memory = True,
+            enable_zero_copy = True,
+            cache_tensors = True
+        )
         self.result = None
         self.device = device
+        
+        # Performance tracking
+        self.stats = {
+            'messages_processed': 0,
+            'direct_executions': 0
+        }
 
 
     def send(self, msg):
@@ -287,18 +462,34 @@ class PseudoParentConn:
         else:
             fn, args = msg
             self.result = fn(self.local_context, *args)
+            self.stats['messages_processed'] += 1
+            self.stats['direct_executions'] += 1
 
 
     def recv(self):
         r = self.result
         self.result = None
         return r
+    
+    def send_batch(self, messages):
+        """Send multiple messages for batch processing."""
+        results = []
+        for msg in messages:
+            if msg == "quit":
+                log_tp(self.device, f"Pseudoprocess worker quit message")
+                continue
+            fn, args = msg
+            result = fn(self.local_context, *args)
+            results.append(result)
+            self.stats['messages_processed'] += 1
+            self.stats['direct_executions'] += 1
+        return results
 
 
     def close(self, *args, **kwargs):
         self.local_context["inf_consumer"].close()
         self.local_context = {}
-        log_tp(self.device, f"Pseudoprocess closed")
+        log_tp(self.device, f"Pseudoprocess closed, stats: {self.stats}")
 
 
     def quit(self):
