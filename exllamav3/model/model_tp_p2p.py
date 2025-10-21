@@ -40,7 +40,7 @@ class P2PTopology:
         
     def _detect_p2p_capabilities(self) -> None:
         """
-        Detect P2P capabilities between all GPU pairs using CUDA APIs.
+        Detect P2P capabilities between all GPU pairs using multiple detection methods.
         """
         log_tp(None, "Detecting P2P capabilities between GPUs")
         
@@ -51,7 +51,132 @@ class P2PTopology:
         for i in range(self.num_devices):
             self.p2p_matrix[i][i] = True
         
-        # Use PyTorch's built-in P2P detection which is more reliable
+        # Try multiple detection methods in order of reliability
+        detection_methods = [
+            ("Direct P2P Test", self._detect_p2p_direct_test),
+            ("CUDA Runtime API", self._detect_p2p_cuda_runtime),
+            ("PyTorch API", self._detect_p2p_pytorch)
+        ]
+        
+        for method_name, method_func in detection_methods:
+            log_tp(None, f"Trying P2P detection method: {method_name}")
+            try:
+                if method_func():
+                    log_tp(None, f"P2P detection successful using {method_name}")
+                    break
+                else:
+                    log_tp(None, f"P2P detection failed using {method_name}, trying next method")
+            except Exception as e:
+                log_tp(None, f"P2P detection error with {method_name}: {e}")
+        
+        # Analyze and build optimal topology
+        self._analyze_topology()
+    
+    def _detect_p2p_direct_test(self) -> bool:
+        """
+        Test P2P capabilities by attempting direct memory access.
+        This is the most reliable method as it actually tests P2P functionality.
+        """
+        any_p2p_detected = False
+        
+        for i, device_i in enumerate(self.active_devices):
+            for j, device_j in enumerate(self.active_devices):
+                if i == j:
+                    continue
+                    
+                try:
+                    # Test P2P by attempting actual memory access
+                    with torch.cuda.device(device_i):
+                        # Create small test tensors
+                        test_src = torch.zeros(16, dtype=torch.float32, device=device_i)
+                        test_dst = torch.zeros(16, dtype=torch.float32, device=device_j)
+                        
+                        # Try to enable peer access
+                        try:
+                            torch.cuda.device_enable_peer_access(device_j)
+                        except RuntimeError as e:
+                            if "peer access already enabled" not in str(e):
+                                # Peer access cannot be enabled
+                                log_tp(device_i, f"P2P: Cannot enable peer access to device {device_j}")
+                                continue
+                        
+                        # Test actual P2P copy
+                        try:
+                            # Use cudaMemcpyPeerAsync through PyTorch
+                            test_dst.copy_(test_src, non_blocking=True)
+                            torch.cuda.synchronize()
+                            
+                            # Verify the copy worked
+                            if torch.allclose(test_dst, test_src):
+                                self.p2p_matrix[i][j] = True
+                                any_p2p_detected = True
+                                log_tp(device_i, f"P2P: Direct test successful with device {device_j}")
+                            else:
+                                log_tp(device_i, f"P2P: Direct test failed - data mismatch with device {device_j}")
+                        except RuntimeError as e:
+                            if "peer" in str(e).lower():
+                                log_tp(device_i, f"P2P: Direct test failed - no P2P access to device {device_j}")
+                            else:
+                                # Some other error, might still work
+                                self.p2p_matrix[i][j] = True
+                                any_p2p_detected = True
+                                log_tp(device_i, f"P2P: Direct test ambiguous with device {device_j} (other error)")
+                        
+                except Exception as e:
+                    log_tp(device_i, f"P2P: Direct test error for device {device_j}: {e}")
+        
+        return any_p2p_detected
+    
+    def _detect_p2p_cuda_runtime(self) -> bool:
+        """
+        Detect P2P capabilities using CUDA runtime API.
+        """
+        any_p2p_detected = False
+        
+        try:
+            cudart = _cudart()
+            
+            # Get CUDA API functions
+            cuda_device_can_access_peer = cudart.cudaDeviceCanAccessPeer
+            cuda_device_can_access_peer.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+            cuda_device_can_access_peer.restype = ctypes.c_int
+            
+            # Test P2P capabilities between all pairs
+            for i, device_i in enumerate(self.active_devices):
+                for j, device_j in enumerate(self.active_devices):
+                    if i == j:
+                        continue
+                        
+                    try:
+                        # Check if device_i can access device_j
+                        can_access = ctypes.c_int()
+                        result = cuda_device_can_access_peer(
+                            ctypes.c_int(device_i),
+                            ctypes.c_int(device_j),
+                            ctypes.byref(can_access)
+                        )
+                        
+                        if result == CUDA_SUCCESS and can_access.value == 1:
+                            self.p2p_matrix[i][j] = True
+                            any_p2p_detected = True
+                            log_tp(device_i, f"P2P: CUDA runtime confirms access to device {device_j}")
+                        else:
+                            log_tp(device_i, f"P2P: CUDA runtime denies access to device {device_j}")
+                            
+                    except Exception as e:
+                        log_tp(device_i, f"P2P: CUDA runtime detection error for device {device_j}: {e}")
+                        
+        except Exception as e:
+            log_tp(None, f"CUDA runtime P2P detection failed: {e}")
+        
+        return any_p2p_detected
+    
+    def _detect_p2p_pytorch(self) -> bool:
+        """
+        Detect P2P capabilities using PyTorch's built-in functions.
+        """
+        any_p2p_detected = False
+        
         try:
             # Check P2P capabilities using PyTorch
             for i, device_i in enumerate(self.active_devices):
@@ -65,53 +190,17 @@ class P2PTopology:
                             can_access = torch.cuda.can_device_access_peer(device_j)
                             if can_access:
                                 self.p2p_matrix[i][j] = True
-                                log_tp(device_i, f"P2P: Can access device {device_j}")
+                                any_p2p_detected = True
+                                log_tp(device_i, f"P2P: PyTorch confirms access to device {device_j}")
                             else:
-                                log_tp(device_i, f"P2P: Cannot access device {device_j}")
+                                log_tp(device_i, f"P2P: PyTorch denies access to device {device_j}")
                     except Exception as e:
-                        log_tp(device_i, f"P2P detection error for device {device_j}: {e}")
+                        log_tp(device_i, f"P2P: PyTorch detection error for device {device_j}: {e}")
                         
         except Exception as e:
             log_tp(None, f"PyTorch P2P detection failed: {e}")
-            
-            # Fallback to CUDA runtime API
-            try:
-                cudart = _cudart()
-                
-                # Get CUDA API functions
-                cuda_device_can_access_peer = cudart.cudaDeviceCanAccessPeer
-                cuda_device_can_access_peer.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
-                cuda_device_can_access_peer.restype = ctypes.c_int
-                
-                # Test P2P capabilities between all pairs
-                for i, device_i in enumerate(self.active_devices):
-                    for j, device_j in enumerate(self.active_devices):
-                        if i == j:
-                            continue
-                            
-                        try:
-                            # Check if device_i can access device_j
-                            can_access = ctypes.c_int()
-                            result = cuda_device_can_access_peer(
-                                ctypes.c_int(device_i),
-                                ctypes.c_int(device_j),
-                                ctypes.byref(can_access)
-                            )
-                            
-                            if result == CUDA_SUCCESS and can_access.value == 1:
-                                self.p2p_matrix[i][j] = True
-                                log_tp(device_i, f"P2P: Can access device {device_j}")
-                            else:
-                                log_tp(device_i, f"P2P: Cannot access device {device_j}")
-                                
-                        except Exception as e:
-                            log_tp(device_i, f"P2P detection error for device {device_j}: {e}")
-                            
-            except Exception as e:
-                log_tp(None, f"CUDA runtime P2P detection failed: {e}")
         
-        # Analyze and build optimal topology
-        self._analyze_topology()
+        return any_p2p_detected
         
     def _analyze_topology(self) -> None:
         """
