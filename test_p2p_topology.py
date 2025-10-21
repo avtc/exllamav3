@@ -37,9 +37,8 @@ def test_p2p_topology():
         for j in active_devices:
             if i != j:
                 try:
-                    with torch.cuda.device(i):
-                        can_access = torch.cuda.can_device_access_peer(j)
-                        print(f"  Device {i} can access device {j}: {can_access}")
+                    can_access = torch.cuda.can_device_access_peer(i, j)
+                    print(f"  Device {i} can access device {j}: {can_access}")
                 except Exception as e:
                     print(f"  Error checking {i} -> {j}: {e}")
     
