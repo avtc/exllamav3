@@ -340,6 +340,9 @@ void p2p_init_direct_memory_pool(
         pool.peer_access_enabled[i] = false;
     }
     
+    // Clear target peers vector
+    pool.target_peers.clear();
+    
     printf("DEBUG: Memory pool allocated successfully for device %d\n", device);
     
     // Enable P2P access for all peer devices during initialization
@@ -626,14 +629,18 @@ void p2p_enable_all_peer_access(
 {
     printf("DEBUG: ENTERING p2p_enable_all_peer_access for device %d\n", device);
     
+    printf("DEBUG: About to create CUDAGuard for device %d\n", device);
     const at::cuda::OptionalCUDAGuard device_guard(device);
+    printf("DEBUG: CUDAGuard created for device %d\n", device);
     
     if (device < 0 || device >= 64) {
         printf("DEBUG: Device %d out of range (max 64)\n", device);
         return;
     }
     
+    printf("DEBUG: About to get pool for device %d\n", device);
     P2PDirectMemoryPool& pool = g_direct_memory_pools[device];
+    printf("DEBUG: Got pool for device %d\n", device);
     
     // Check if pool is initialized
     if (!pool.initialized) {
@@ -641,7 +648,9 @@ void p2p_enable_all_peer_access(
         return;
     }
     
+    printf("DEBUG: About to acquire mutex lock for device %d\n", device);
     std::lock_guard<std::mutex> lock(pool.pool_mutex);
+    printf("DEBUG: Mutex lock acquired for device %d\n", device);
     
     printf("DEBUG: Enabling P2P for device %d, peer_devices count: %zu\n", device, peer_devices.size());
     printf("DEBUG: About to iterate through peer devices\n");
