@@ -31,7 +31,6 @@ void p2p_all_reduce_kernel
     int t = threadIdx.x;
     auto grid = cg::this_grid();
     
-    __shared__ bool r;
     int dir = blockIdx.x;
     
     int num_ranks = __popc(device_mask);
@@ -63,10 +62,6 @@ void p2p_all_reduce_kernel
     int dst_device = __fns(device_mask, 0, dst_rank + 1);
     int src_device = __fns(device_mask, 0, src_rank + 1);
     
-    // Check P2P capabilities
-    int can_access_dst, can_access_src;
-    cudaDeviceCanAccessPeer(&can_access_dst, this_device, dst_device);
-    cudaDeviceCanAccessPeer(&can_access_src, src_device, this_device);
     
     // Loop around ring
     for (int iter = 0; iter < (num_ranks - 1) * 2; ++iter)
@@ -83,48 +78,36 @@ void p2p_all_reduce_kernel
         int stage_send = stage_beg;
         int stage_recv = stage_beg;
         
-        uint32_t sleep = SYNC_MIN_SLEEP;
         
         if (dir == 0)
         {
             while (stage_recv < stage_end)
             {
                 // Receive data from source device
-                if (can_access_src)
+                // Direct P2P access to source device memory
+                for (int i = stage_recv; i < stage_end && i < stage_recv + BATCH_STAGE; ++i)
                 {
-                    // Direct P2P access to source device memory
-                    for (int i = stage_recv; i < stage_end && i < stage_recv + BATCH_STAGE; ++i)
+                    float4* src = (float4*) data_stage_ptr(recv_seg, i);
+                    float4* dst = (float4*) data_stage_ptr(recv_seg, i);
+                    
+                    if (dst + t < (float4*) data_end)
                     {
-                        float4* src = (float4*) data_stage_ptr(recv_seg, i);
-                        float4* dst = (float4*) data_stage_ptr(recv_seg, i);
-                        
-                        if (dst + t < (float4*) data_end)
+                        // First num_ranks - 1 iterations: accumulate
+                        if (iter < num_ranks - 1)
                         {
-                            // First num_ranks - 1 iterations: accumulate
-                            if (iter < num_ranks - 1)
-                            {
-                                float4 a = dst[t];
-                                float4 b = src[t];
-                                a.x += b.x; a.y += b.y; a.z += b.z; a.w += b.w;
-                                dst[t] = a;
-                            }
-                            // Last num_ranks - 1 iterations: copy
-                            else
-                            {
-                                dst[t] = src[t];
-                            }
+                            float4 a = dst[t];
+                            float4 b = src[t];
+                            a.x += b.x; a.y += b.y; a.z += b.z; a.w += b.w;
+                            dst[t] = a;
+                        }
+                        // Last num_ranks - 1 iterations: copy
+                        else
+                        {
+                            dst[t] = src[t];
                         }
                     }
-                    stage_recv = min(stage_recv + BATCH_STAGE, stage_end);
                 }
-                else
-                {
-                    // Fallback to traditional method
-                    __nanosleep(sleep);
-                    if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
-                    else *abort_flag = check_timeout(ctx, deadline, "p2p_all_reduce (1)");
-                    if (*abort_flag) break;
-                }
+                stage_recv = min(stage_recv + BATCH_STAGE, stage_end);
             }
         }
         
@@ -133,26 +116,15 @@ void p2p_all_reduce_kernel
         {
             while (stage_send < stage_end)
             {
-                if (can_access_dst)
+                // Direct P2P access to destination device memory
+                for (int i = 0; i < BATCH_STAGE && stage_send < stage_end; ++i)
                 {
-                    // Direct P2P access to destination device memory
-                    for (int i = 0; i < BATCH_STAGE && stage_send < stage_end; ++i)
-                    {
-                        uint4* src = (uint4*) data_stage_ptr(send_seg, stage_send);
-                        // For P2P, we need to enable peer access first
-                        uint4* dst = (uint4*) data_ptr;  // This would be replaced with actual P2P access
-                        
-                        if (src + t < (uint4*) data_end) dst[t] = src[t];
-                        stage_send++;
-                    }
-                }
-                else
-                {
-                    // Fallback to traditional method
-                    __nanosleep(sleep);
-                    if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
-                    else *abort_flag = check_timeout(ctx, deadline, "p2p_all_reduce (2)");
-                    if (*abort_flag) break;
+                    uint4* src = (uint4*) data_stage_ptr(send_seg, stage_send);
+                    // For P2P, we need to enable peer access first
+                    uint4* dst = (uint4*) data_ptr;  // This would be replaced with actual P2P access
+                    
+                    if (src + t < (uint4*) data_end) dst[t] = src[t];
+                    stage_send++;
                 }
             }
         }
