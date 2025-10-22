@@ -302,6 +302,30 @@ def main():
             print(f"Error initializing backend for device {device}: {e}")
             return
     
+    # Clean up P2P topology to avoid peer access conflicts
+    # The topology detection enables peer access, but we want the backend to manage it
+    print("Cleaning up P2P topology to avoid conflicts...")
+    for device in devices:
+        try:
+            # Disable peer access that was enabled during topology detection
+            for peer_device in devices:
+                if device != peer_device:
+                    try:
+                        ext.p2p_disable_peer_access(device, peer_device, backends[device].abort_flag)
+                    except:
+                        pass  # Ignore errors during cleanup
+        except:
+            pass  # Ignore errors during cleanup
+    
+    # Re-initialize P2P memory pools after cleanup
+    print("Re-initializing P2P memory pools...")
+    for device in devices:
+        try:
+            backends[device]._init_p2p_memory_pool()
+            print(f"Re-initialized P2P memory pool for device {device}")
+        except Exception as e:
+            print(f"Error re-initializing memory pool for device {device}: {e}")
+    
     try:
         # Run benchmarks
         if len(devices) >= 2:
