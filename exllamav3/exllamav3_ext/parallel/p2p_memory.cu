@@ -488,15 +488,14 @@ bool p2p_can_access_peer_direct(
         return true;
     }
     
-    // Peer access should have been enabled during initialization
-    // Check CUDA P2P capability as a fallback
+    // Check actual CUDA P2P status
     int can_access;
     cudaError_t result = cudaDeviceCanAccessPeer(&can_access, device, peer_device);
     
     if (result == cudaSuccess && can_access) {
-        // This should not happen if initialization was successful
-        // but we'll return true if P2P is technically possible
-        return true;
+        // P2P is technically possible but not enabled in our pool
+        printf("Warning: P2P possible from %d to %d but not enabled in pool\n", device, peer_device);
+        return false;
     }
     
     return false;
@@ -634,9 +633,11 @@ void p2p_enable_all_peer_access(
             cudaError_t result = cudaDeviceEnablePeerAccess(peer_device, 0);
             if (result == cudaSuccess || result == cudaErrorPeerAccessAlreadyEnabled) {
                 pool.peer_access_enabled[peer_device] = true;
+                printf("Successfully enabled P2P access from device %d to %d\n", device, peer_device);
             } else {
                 // Log error but continue with other devices
-                // In a production environment, you might want to log this error
+                printf("Failed to enable P2P access from device %d to %d: %s\n",
+                       device, peer_device, cudaGetErrorString(result));
             }
         }
     }
