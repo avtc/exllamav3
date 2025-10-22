@@ -333,15 +333,8 @@ void p2p_init_direct_memory_pool(
         pool.peer_access_enabled[i] = false;
     }
     
-    // Enable peer access for specified devices
-    for (int peer_device : peer_devices) {
-        if (peer_device >= 0 && peer_device < 64 && peer_device != device) {
-            result = cudaDeviceEnablePeerAccess(peer_device, 0);
-            if (result == cudaSuccess || result == cudaErrorPeerAccessAlreadyEnabled) {
-                pool.peer_access_enabled[peer_device] = true;
-            }
-        }
-    }
+    // Don't enable peer access here - let the copy functions handle it
+    // This avoids conflicts with peer access being enabled elsewhere
 }
 
 void p2p_cleanup_direct_memory_pool(
