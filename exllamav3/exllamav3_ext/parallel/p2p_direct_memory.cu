@@ -716,6 +716,16 @@ void p2p_enable_peer_access(
 ) {
     const at::cuda::OptionalCUDAGuard device_guard(device);
     
+    // First check if peer access is already enabled
+    int can_access;
+    cudaError_t check_result = cudaDeviceCanAccessPeer(&can_access, device, peer_device);
+    
+    if (check_result == cudaSuccess && can_access) {
+        // P2P access is already available, no need to enable it again
+        return;
+    }
+    
+    // Try to enable peer access
     cudaError_t result = cudaDeviceEnablePeerAccess(peer_device, 0);
     
     if (result != cudaSuccess && result != cudaErrorPeerAccessAlreadyEnabled) {

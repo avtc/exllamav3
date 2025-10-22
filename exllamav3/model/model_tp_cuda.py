@@ -77,6 +77,17 @@ def cuda_host_unregister(ptr: int) -> None:
 # P2P memory utility functions
 def cuda_device_enable_peer_access(peer_device: int, flags: int = 0) -> None:
     """Enable peer access to another GPU device."""
+    # First check if peer access is already enabled
+    current_device = cuda_get_device()
+    can_access = ctypes.c_int()
+    try:
+        cuda_device_can_access_peer(ctypes.byref(can_access), current_device, peer_device)
+        if can_access.value != 0:
+            # P2P access is already available, no need to enable it again
+            return
+    except RuntimeError:
+        pass  # Continue with enabling if check fails
+    
     lib = _cudart()
     fn = lib.cudaDeviceEnablePeerAccess
     fn.argtypes = [ctypes.c_int, ctypes.c_uint]

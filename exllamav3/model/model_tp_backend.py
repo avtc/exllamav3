@@ -71,6 +71,9 @@ class TPBackendP2P:
         
         self.auto_fallback = auto_fallback
         
+        # Initialize shared memory for P2P operations (without fallback)
+        self._init_shared_memory()
+        
         # Initialize P2P topology detection
         if master:
             try:
@@ -79,35 +82,27 @@ class TPBackendP2P:
                 log_tp(device, f"P2P topology: {topology_summary}")
                 print(f" -- P2P topology: {topology_summary}")
                 
-                # If P2P is not available, fall back to native backend
-                if topology_summary.get("connectivity_ratio", 0) == 0:
-                    log_tp(device, "P2P not available, falling back to native backend")
-                    self.use_p2p = False
-                else:
-                    self.use_p2p = True
-                    # Initialize P2P memory pool
-                    self._init_p2p_memory_pool()
+                # P2P backend requires full connectivity - fail if not available
+                if not topology_summary.get("is_fully_connected", False):
+                    raise RuntimeError(f"P2P backend requires fully connected topology. Current connectivity: {topology_summary.get('connectivity_ratio', 0):.2f}")
+                
+                self.use_p2p = True
+                # Initialize P2P memory pool
+                self._init_p2p_memory_pool()
             except Exception as e:
-                log_tp(device, f"P2P topology detection failed: {e}, falling back to native backend")
-                self.p2p_topology = None
-                self.use_p2p = False
+                log_tp(device, f"P2P backend initialization failed: {e}")
+                raise RuntimeError(f"P2P backend initialization failed for device {device}: {e}")
         else:
             # Non-master processes will get topology from shared memory
+            # P2P backend is only created when P2P is confirmed to be available
             self.p2p_topology = None
-            self.use_p2p = True  # Assume P2P is available for non-master processes
+            self.use_p2p = True
             # Initialize P2P memory pool
             self._init_p2p_memory_pool()
         
-        # Create fallback to native backend for operations not supported by P2P
-        self.fallback = TPBackendNative(
-            device,
-            active_devices,
-            output_device,
-            init_method,
-            master,
-            uuid,
-            shbuf_size
-        )
+        # P2P backend operates without fallback - P2P operations must work or fail explicitly
+        self.fallback = None
+        log_tp(self.device, f"P2P backend initialized without fallback for device {self.device}")
         
         
         # Initialize monitoring tools if available
@@ -123,6 +118,105 @@ class TPBackendP2P:
             # Set topology for monitoring
             if self.monitor and self.p2p_topology:
                 self.monitor.set_topology(self.p2p_topology)
+                
+    def _init_shared_memory(self):
+        """Initialize shared memory for P2P operations without fallback."""
+        if self.device < 0:
+            return
+            
+        try:
+            # Create shared memory structures similar to TPBackendNative but simplified
+            import multiprocessing.shared_memory as shm
+            
+            # Shared memory names
+            shm_g_name = self.uuid + "_g"
+            shm_b_name = self.uuid + "_b"
+            shm_r_name = self.uuid + "_r"
+            shm_s_name = self.uuid + "_s"
+            
+            # Sizes
+            GLOBALS_SIZE = 128*1024
+            SHBUF_SIZE_R = 17 * 128 * 1024
+            SHBUF_SIZE_S = 16 * 1024
+            
+            if self.rank == 0:  # Master process creates shared memory
+                self.shm_g = shm.SharedMemory(create=True, size=GLOBALS_SIZE, name=shm_g_name)
+                self.shm_b = shm.SharedMemory(create=True, size=self.shbuf_size, name=shm_b_name)
+                self.shm_r = shm.SharedMemory(create=True, size=SHBUF_SIZE_R, name=shm_r_name)
+                self.shm_s = shm.SharedMemory(create=True, size=SHBUF_SIZE_S, name=shm_s_name)
+                
+                # Initialize buffers
+                import numpy as np
+                self.buf_g = np.ndarray((GLOBALS_SIZE,), dtype=np.uint8, buffer=self.shm_g.buf)
+                self.buf_b = np.ndarray((self.shbuf_size,), dtype=np.uint8, buffer=self.shm_b.buf)
+                self.buf_r = np.ndarray((SHBUF_SIZE_R,), dtype=np.uint8, buffer=self.shm_r.buf)
+                self.buf_s = np.ndarray((SHBUF_SIZE_S,), dtype=np.uint8, buffer=self.shm_s.buf)
+                
+                self.buf_g[:] = 0
+                self.buf_b[: self.shbuf_size: 4096] = 0
+                self.buf_r[:] = 0
+                self.buf_s[:] = 0
+            else:
+                # Non-master processes wait for shared memory to appear
+                import time
+                deadline = time.time() + 15
+                
+                self.shm_g = None
+                self.shm_b = None
+                self.shm_r = None
+                self.shm_s = None
+                
+                while True:
+                    try:
+                        if self.shm_g is None:
+                            self.shm_g = shm.SharedMemory(name=shm_g_name)
+                        if self.shm_b is None:
+                            self.shm_b = shm.SharedMemory(name=shm_b_name)
+                        if self.shm_r is None:
+                            self.shm_r = shm.SharedMemory(name=shm_r_name)
+                        if self.shm_s is None:
+                            self.shm_s = shm.SharedMemory(name=shm_s_name)
+                        break
+                    except FileNotFoundError:
+                        if time.time() > deadline:
+                            raise TimeoutError("Timeout waiting for shared memory")
+                        time.sleep(0.05)
+                
+                import numpy as np
+                self.buf_g = np.ndarray((GLOBALS_SIZE,), dtype=np.uint8, buffer=self.shm_g.buf)
+                self.buf_b = np.ndarray((self.shbuf_size,), dtype=np.uint8, buffer=self.shm_b.buf)
+                self.buf_r = np.ndarray((SHBUF_SIZE_R,), dtype=np.uint8, buffer=self.shm_r.buf)
+                self.buf_s = np.ndarray((SHBUF_SIZE_S,), dtype=np.uint8, buffer=self.shm_s.buf)
+            
+            # Create tensors from shared memory
+            self.tensor_g = torch.as_tensor(self.buf_g)
+            self.tensor_b = torch.as_tensor(self.buf_b)
+            self.tensor_r = torch.as_tensor(self.buf_r)
+            self.tensor_s = torch.as_tensor(self.buf_s)
+            
+            # Get pointers for CUDA operations
+            self.ptr_g = self.tensor_g.data_ptr()
+            self.ptr_b = self.tensor_b.data_ptr()
+            self.ptr_r = self.tensor_r.data_ptr()
+            self.ptr_s = self.tensor_s.data_ptr()
+            
+            # Register host memory for CUDA access
+            from .model_tp_cuda import cuda_host_register, CUDA_HOST_REGISTER_PORTABLE
+            cuda_host_register(self.ptr_g, self.tensor_g.numel(), flags=CUDA_HOST_REGISTER_PORTABLE)
+            cuda_host_register(self.ptr_b, self.tensor_b.numel(), flags=CUDA_HOST_REGISTER_PORTABLE)
+            cuda_host_register(self.ptr_r, self.tensor_r.numel(), flags=CUDA_HOST_REGISTER_PORTABLE)
+            cuda_host_register(self.ptr_s, self.tensor_s.numel(), flags=CUDA_HOST_REGISTER_PORTABLE)
+            
+            # Initialize global context
+            if self.rank == 0:
+                import exllamav3_ext as ext
+                ext.pg_init_context(self.ptr_g)
+                
+            log_tp(self.device, f"P2P shared memory initialized for device {self.device}")
+            
+        except Exception as e:
+            log_tp(self.device, f"P2P shared memory initialization failed: {e}")
+            raise RuntimeError(f"Failed to initialize P2P shared memory for device {self.device}: {e}")
     def _init_p2p_memory_pool(self):
         """Initialize P2P memory pool for this device with adaptive sizing."""
         if self.device < 0 or not self.use_p2p:
@@ -209,46 +303,67 @@ class TPBackendP2P:
         # Cleanup P2P memory pool
         if self.use_p2p:
             try:
+                import exllamav3_ext as ext
                 ext.p2p_cleanup_memory_pool(self.device, self.abort_flag)
                 ext.p2p_cleanup_direct_memory_pool(self.device, self.abort_flag)
                 log_tp(self.device, "P2P memory pool cleaned up")
             except Exception as e:
                 log_tp(self.device, f"P2P memory pool cleanup failed: {e}")
 
-        self.fallback.close()
+        # Cleanup shared memory
+        try:
+            if hasattr(self, 'tensor_g') and self.tensor_g is not None:
+                from .model_tp_cuda import cuda_host_unregister
+                cuda_host_unregister(self.ptr_g)
+                cuda_host_unregister(self.ptr_b)
+                cuda_host_unregister(self.ptr_r)
+                cuda_host_unregister(self.ptr_s)
+                
+                # Close shared memory
+                if hasattr(self, 'shm_g') and self.shm_g:
+                    self.shm_g.close()
+                    log_tp(self.device, f"Closed {self.uuid}_g")
+                if hasattr(self, 'shm_b') and self.shm_b:
+                    self.shm_b.close()
+                    log_tp(self.device, f"Closed {self.uuid}_b")
+                if hasattr(self, 'shm_r') and self.shm_r:
+                    self.shm_r.close()
+                    log_tp(self.device, f"Closed {self.uuid}_r")
+                if hasattr(self, 'shm_s') and self.shm_s:
+                    self.shm_s.close()
+                    log_tp(self.device, f"Closed {self.uuid}_s")
+                
+                # Master process unlinks shared memory
+                if self.rank == 0:
+                    if hasattr(self, 'shm_g') and self.shm_g:
+                        self.shm_g.unlink()
+                        log_tp(self.device, f"Unlinked {self.uuid}_g")
+                    if hasattr(self, 'shm_b') and self.shm_b:
+                        self.shm_b.unlink()
+                        log_tp(self.device, f"Unlinked {self.uuid}_b")
+                    if hasattr(self, 'shm_r') and self.shm_r:
+                        self.shm_r.unlink()
+                        log_tp(self.device, f"Unlinked {self.uuid}_r")
+                    if hasattr(self, 'shm_s') and self.shm_s:
+                        self.shm_s.unlink()
+                        log_tp(self.device, f"Unlinked {self.uuid}_s")
+                        
+                log_tp(self.device, "P2P shared memory cleaned up")
+        except Exception as e:
+            log_tp(self.device, f"P2P shared memory cleanup failed: {e}")
 
     def fwd_barrier(self):
-        if self.use_p2p:
-            try:
-                # Use P2P-aware barrier
-                ext.p2p_device_barrier(self.active_devices, self.device, self.abort_flag)
-            except Exception as e:
-                log_tp(self.device, f"P2P barrier failed: {e}, using fallback")
-                self.fallback.fwd_barrier()
-        else:
-            self.fallback.fwd_barrier()
+        try:
+            # Use P2P-aware barrier
+            ext.p2p_device_barrier(self.active_devices, self.device, self.abort_flag)
+        except Exception as e:
+            log_tp(self.device, f"P2P barrier failed: {e}")
+            raise RuntimeError(f"P2P barrier operation failed for device {self.device}: {e}")
 
     def broadcast(self, tensor: torch.Tensor, src_device: int):
         # Record operation start time for monitoring
         start_time = time.time()
         success = True
-        
-        if not self.use_p2p or not self.p2p_topology:
-            self.fallback.broadcast(tensor, src_device)
-            # Record fallback operation
-            if self.monitor:
-                end_time = time.time()
-                self.monitor.record_operation(
-                    operation_type="broadcast",
-                    device_id=self.device,
-                    peer_device=src_device,
-                    tensor=tensor,
-                    start_time=start_time,
-                    end_time=end_time,
-                    algorithm="fallback",
-                    success=True
-                )
-            return
             
         try:
             # Log debug event
@@ -274,21 +389,20 @@ class TPBackendP2P:
                 else:
                     log_tp(self.device, f"P2P broadcast: already on device {src_device}")
                 
-                # Fallback to traditional P2P broadcast for synchronization
+                # Use traditional P2P broadcast for synchronization
                 if tensor.numel() * tensor.element_size() <= 2048:
-                    ext.p2p_broadcast_ll(self.fallback.ptr_g, self.active_devices, self.device,
+                    ext.p2p_broadcast_ll(self.ptr_g, self.active_devices, self.device,
                                        src_device, tensor, self.abort_flag)
                 else:
-                    ext.p2p_broadcast(self.fallback.ptr_g, self.active_devices, self.device,
+                    ext.p2p_broadcast(self.ptr_g, self.active_devices, self.device,
                                     src_device, tensor, self.abort_flag)
             else:
-                # Fallback to native broadcast
-                log_tp(self.device, f"P2P not available from {src_device}, using fallback")
-                self.fallback.broadcast(tensor, src_device)
+                # P2P not available between these devices
+                raise RuntimeError(f"P2P not available from device {src_device} to {self.device}")
                 
         except Exception as e:
             success = False
-            log_tp(self.device, f"P2P broadcast failed: {e}, using fallback")
+            log_tp(self.device, f"P2P broadcast failed: {e}")
             
             # Log debug error
             if self.debugger:
@@ -301,7 +415,7 @@ class TPBackendP2P:
                     context={"tensor_shape": tensor.shape, "tensor_dtype": str(tensor.dtype)}
                 )
             
-            self.fallback.broadcast(tensor, src_device)
+            raise RuntimeError(f"P2P broadcast operation failed for device {self.device}: {e}")
         
         finally:
             # Record operation for monitoring
@@ -334,23 +448,6 @@ class TPBackendP2P:
         start_time = time.time()
         success = True
         algorithm = None
-        
-        if not self.use_p2p or not self.p2p_topology:
-            self.fallback.all_reduce(tensor, contribution)
-            # Record fallback operation
-            if self.monitor:
-                end_time = time.time()
-                self.monitor.record_operation(
-                    operation_type="all_reduce",
-                    device_id=self.device,
-                    peer_device=None,
-                    tensor=tensor,
-                    start_time=start_time,
-                    end_time=end_time,
-                    algorithm="fallback",
-                    success=True
-                )
-            return
             
         try:
             # Log debug event
@@ -386,17 +483,17 @@ class TPBackendP2P:
             # Use the selected algorithm
             if algorithm == "ring":
                 # Ring-based all_reduce for partial connectivity or small device count
-                ext.p2p_all_reduce_ring(self.fallback.ptr_g, self.active_devices, self.device,
+                ext.p2p_all_reduce_ring(self.ptr_g, self.active_devices, self.device,
                                       self.active_devices[0], tensor, self.abort_flag)
             elif algorithm in ["binary_tree", "kary_tree", "balanced_tree"]:
                 # Tree-based all_reduce with adaptive selection
                 tree_type = 0 if algorithm == "binary_tree" else (1 if algorithm == "kary_tree" else 2)
-                ext.p2p_all_reduce_tree_adaptive(self.fallback.ptr_g, self.active_devices, self.device,
+                ext.p2p_all_reduce_tree_adaptive(self.ptr_g, self.active_devices, self.device,
                                                self.active_devices[0], tensor, self.abort_flag,
                                                connectivity_ratio)
             else:
                 # Fallback to original P2P all_reduce
-                ext.p2p_all_reduce(self.fallback.ptr_g, self.active_devices, self.device,
+                ext.p2p_all_reduce(self.ptr_g, self.active_devices, self.device,
                                  self.active_devices[0], tensor, self.abort_flag)
             
             # Convert back to original dtype if needed
@@ -407,7 +504,7 @@ class TPBackendP2P:
             
         except Exception as e:
             success = False
-            log_tp(self.device, f"P2P all_reduce failed: {e}, using fallback")
+            log_tp(self.device, f"P2P all_reduce failed: {e}")
             
             # Log debug error
             if self.debugger:
@@ -424,7 +521,7 @@ class TPBackendP2P:
                     }
                 )
             
-            self.fallback.all_reduce(tensor, contribution)
+            raise RuntimeError(f"P2P all_reduce operation failed for device {self.device}: {e}")
         
         finally:
             # Record operation for monitoring
@@ -463,23 +560,6 @@ class TPBackendP2P:
         # Record operation start time for monitoring
         start_time = time.time()
         success = True
-        
-        if not self.use_p2p or not self.p2p_topology:
-            self.fallback.gather(tensor, out_tensor, gather_devices, out_device, ldims)
-            # Record fallback operation
-            if self.monitor:
-                end_time = time.time()
-                self.monitor.record_operation(
-                    operation_type="gather",
-                    device_id=self.device,
-                    peer_device=out_device,
-                    tensor=tensor,
-                    start_time=start_time,
-                    end_time=end_time,
-                    algorithm="fallback",
-                    success=True
-                )
-            return
             
         try:
             # Log debug event
@@ -525,13 +605,13 @@ class TPBackendP2P:
                     log_tp(self.device, f"P2P direct gather copy to device {out_device}")
             
             # Use traditional P2P gather for synchronization
-            ext.p2p_gather(self.fallback.ptr_g, self.active_devices, self.device,
+            ext.p2p_gather(self.ptr_g, self.active_devices, self.device,
                          out_device, tensor, out_tensor, ldims, self.abort_flag)
             log_tp(self.device, f"P2P gather to device {out_device}")
             
         except Exception as e:
             success = False
-            log_tp(self.device, f"P2P gather failed: {e}, using fallback")
+            log_tp(self.device, f"P2P gather failed: {e}")
             
             # Log debug error
             if self.debugger:
@@ -549,7 +629,7 @@ class TPBackendP2P:
                     }
                 )
             
-            self.fallback.gather(tensor, out_tensor, gather_devices, out_device, ldims)
+            raise RuntimeError(f"P2P gather operation failed for device {self.device}: {e}")
         
         finally:
             # Record operation for monitoring
@@ -591,30 +671,6 @@ class TPBackendP2P:
         success = True
         result_tensor = None
         
-        if not self.use_p2p or not self.p2p_topology:
-            # Fallback to traditional copy
-            if self.device == dst_device:
-                tensor_copy = torch.empty_like(tensor, device=self.device)
-                tensor_copy.copy_(tensor)
-                result_tensor = tensor_copy
-            else:
-                raise RuntimeError(f"Cannot copy from device {src_device} to {dst_device} without P2P")
-            
-            # Record fallback operation
-            if self.monitor:
-                end_time = time.time()
-                self.monitor.record_operation(
-                    operation_type="direct_copy",
-                    device_id=self.device,
-                    peer_device=dst_device if self.device == src_device else src_device,
-                    tensor=tensor,
-                    start_time=start_time,
-                    end_time=end_time,
-                    algorithm="fallback",
-                    success=True
-                )
-            return result_tensor
-        
         try:
             # Log debug event
             if self.debugger:
@@ -640,12 +696,12 @@ class TPBackendP2P:
                 log_tp(self.device, f"P2P direct copy: {src_device} -> {dst_device}")
                 result_tensor = tensor
             else:
-                # We are neither source nor destination, use fallback
-                result_tensor = self.fallback.copy_tensor_direct(src_device, dst_device, tensor)
+                # We are neither source nor destination
+                raise RuntimeError(f"Device {self.device} is neither source nor destination for copy operation")
                 
         except Exception as e:
             success = False
-            log_tp(self.device, f"P2P direct copy failed: {e}, using fallback")
+            log_tp(self.device, f"P2P direct copy failed: {e}")
             
             # Log debug error
             if self.debugger:
@@ -663,7 +719,7 @@ class TPBackendP2P:
                     }
                 )
             
-            result_tensor = self.fallback.copy_tensor_direct(src_device, dst_device, tensor)
+            raise RuntimeError(f"P2P direct copy operation failed for device {self.device}: {e}")
         
         finally:
             # Record operation for monitoring

@@ -678,6 +678,17 @@ void p2p_enable_all_peer_access(
             
             printf("DEBUG: Enabling P2P access from device %d to peer %d\n", device, peer_device);
             
+            // First check if peer access is already enabled
+            int can_access;
+            cudaError_t check_result = cudaDeviceCanAccessPeer(&can_access, device, peer_device);
+            
+            if (check_result == cudaSuccess && can_access) {
+                // P2P access is already available, no need to enable it again
+                pool.peer_access_enabled[peer_device] = true;
+                printf("DEBUG: P2P access already available from device %d to %d\n", device, peer_device);
+                continue;
+            }
+            
             // Try to enable peer access
             cudaError_t result = cudaDeviceEnablePeerAccess(peer_device, 0);
             printf("DEBUG: cudaDeviceEnablePeerAccess(%d) result: %s\n",
