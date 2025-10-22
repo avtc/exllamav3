@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'exllamav3'))
 
 from exllamav3.model.model_tp_backend import TPBackendP2P
 from exllamav3.model.model_tp_p2p import P2PTopology
-from exllamav3.ext import exllamav3_ext as ext
+import exllamav3_ext as ext
 
 
 def benchmark_p2p_bandwidth(backend, src_device, dst_device, sizes_mb, num_iterations=10):
