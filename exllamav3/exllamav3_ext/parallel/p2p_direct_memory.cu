@@ -617,8 +617,8 @@ bool p2p_validate_memory_access(
     size_t test_size = min(size, (size_t)1024);  // Test with at most 1KB
     
     // P2P access should have been enabled during initialization
-    cudaError_t result = cudaMemcpyPeerAsync(dst_ptr, dst_device, src_ptr, src_device, test_size, 0);
-    if (result != cudaSuccess) {
+    cudaError_t test_result = cudaMemcpyPeerAsync(dst_ptr, dst_device, src_ptr, src_device, test_size, 0);
+    if (test_result != cudaSuccess) {
         return false;
     }
     
