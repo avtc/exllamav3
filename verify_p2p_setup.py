@@ -32,10 +32,11 @@ def test_p2p_setup():
     
     # Check CUDA P2P capability first
     print(f"\n=== CUDA P2P Capability Check ===")
-    can_access = torch.cuda.device_can_access_peer(src_device, dst_device)
+    # Use the correct PyTorch method
+    can_access = torch.cuda.can_device_access_peer(src_device, dst_device)
     print(f"Device {src_device} can access device {dst_device}: {can_access}")
     
-    can_access_reverse = torch.cuda.device_can_access_peer(dst_device, src_device)
+    can_access_reverse = torch.cuda.can_device_access_peer(dst_device, src_device)
     print(f"Device {dst_device} can access device {src_device}: {can_access_reverse}")
     
     if not can_access or not can_access_reverse:
