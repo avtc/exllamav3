@@ -1,4 +1,5 @@
 #include <cuda_fp16.h>
+#include <cuda_runtime.h>
 #include "p2p_memory.cuh"
 #include <c10/cuda/CUDAGuard.h>
 #include <ATen/cuda/CUDAContext.h>

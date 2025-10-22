@@ -2,7 +2,9 @@
 
 #include <ATen/Tensor.h>
 
+#ifndef MAX_DEVICES
 #define MAX_DEVICES 16
+#endif
 #define BROADCAST_STAGE_SIZE 16384
 #define MAX_REDUCE_JOBS 2048
 #define REDUCE_STAGE_STRIDE (64 / sizeof(uint32_t))

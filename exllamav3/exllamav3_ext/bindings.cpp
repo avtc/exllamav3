@@ -1,4 +1,5 @@
 #include <cuda_fp16.h>
+#include <cuda_runtime.h>
 
 #include <torch/extension.h>
 #include <pybind11/pybind11.h>
