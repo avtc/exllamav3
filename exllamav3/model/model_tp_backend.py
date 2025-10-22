@@ -158,6 +158,7 @@ class TPBackendP2P:
                     successful_enables = 0
                     for peer_device in peer_devices:
                         if self.p2p_topology.can_access_peer(self.device, peer_device):
+                            log_tp(self.device, f"DEBUG: About to enable peer access to device {peer_device}")
                             try:
                                 # Set timeout for peer access enable to prevent hanging
                                 import signal
@@ -170,6 +171,7 @@ class TPBackendP2P:
                                 signal.alarm(10)  # 10 second timeout
                                 
                                 try:
+                                    log_tp(self.device, f"DEBUG: Calling ext.p2p_enable_peer_access for device {peer_device}")
                                     ext.p2p_enable_peer_access(self.device, peer_device, self.abort_flag)
                                     log_tp(self.device, f"P2P peer access enabled: {peer_device}")
                                     successful_enables += 1
@@ -180,6 +182,7 @@ class TPBackendP2P:
                             except TimeoutError as te:
                                 log_tp(self.device, f"P2P peer access enable timed out for {peer_device}: {te}")
                             except Exception as e:
+                                log_tp(self.device, f"DEBUG: Exception in peer access enable for {peer_device}: {e}")
                                 log_tp(self.device, f"P2P peer access failed for {peer_device}: {e}")
                     
                     log_tp(self.device, f"P2P peer access enabled for {successful_enables}/{len(peer_devices)} peers")

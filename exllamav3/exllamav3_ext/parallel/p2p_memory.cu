@@ -345,10 +345,8 @@ void p2p_init_direct_memory_pool(
     
     printf("DEBUG: Memory pool allocated successfully for device %d\n", device);
     
-    // Enable P2P access for all peer devices during initialization
-    printf("DEBUG: About to call p2p_enable_all_peer_access for device %d\n", device);
-    p2p_enable_all_peer_access(device, peer_devices, abort_flag);
-    printf("DEBUG: Returned from p2p_enable_all_peer_access for device %d\n", device);
+    // Peer access will be handled by Python side
+    printf("DEBUG: Skipping peer access enable (handled by Python side) for device %d\n", device);
 }
 
 void p2p_cleanup_direct_memory_pool(
