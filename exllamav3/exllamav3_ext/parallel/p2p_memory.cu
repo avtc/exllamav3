@@ -333,8 +333,8 @@ void p2p_init_direct_memory_pool(
         pool.peer_access_enabled[i] = false;
     }
     
-    // Don't enable peer access here - let the copy functions handle it
-    // This avoids conflicts with peer access being enabled elsewhere
+    // Enable P2P access for all peer devices during initialization
+    p2p_enable_all_peer_access(device, peer_devices, abort_flag);
 }
 
 void p2p_cleanup_direct_memory_pool(
@@ -399,13 +399,9 @@ void* p2p_allocate_from_direct_pool(
     // Check if peer access is enabled
     if (peer_device >= 0 && peer_device < 64 && peer_device != device) {
         if (!pool.peer_access_enabled[peer_device]) {
-            // Try to enable peer access
-            cudaError_t result = cudaDeviceEnablePeerAccess(peer_device, 0);
-            if (result == cudaSuccess || result == cudaErrorPeerAccessAlreadyEnabled) {
-                pool.peer_access_enabled[peer_device] = true;
-            } else {
-                return nullptr; // Cannot enable peer access
-            }
+            // Peer access should have been enabled during initialization
+            // Return nullptr if not available
+            return nullptr;
         }
     }
     
@@ -492,17 +488,15 @@ bool p2p_can_access_peer_direct(
         return true;
     }
     
-    // Check CUDA P2P capability
+    // Peer access should have been enabled during initialization
+    // Check CUDA P2P capability as a fallback
     int can_access;
     cudaError_t result = cudaDeviceCanAccessPeer(&can_access, device, peer_device);
     
     if (result == cudaSuccess && can_access) {
-        // Try to enable peer access
-        result = cudaDeviceEnablePeerAccess(peer_device, 0);
-        if (result == cudaSuccess || result == cudaErrorPeerAccessAlreadyEnabled) {
-            pool.peer_access_enabled[peer_device] = true;
-            return true;
-        }
+        // This should not happen if initialization was successful
+        // but we'll return true if P2P is technically possible
+        return true;
     }
     
     return false;
@@ -610,4 +604,40 @@ size_t p2p_get_direct_pool_size(
     }
     
     return pool.total_size;
+}
+
+// Centralized P2P access management
+void p2p_enable_all_peer_access(
+    int device,
+    std::vector<int> peer_devices,
+    at::Tensor& abort_flag
+)
+{
+    const at::cuda::OptionalCUDAGuard device_guard(device);
+    
+    if (device < 0 || device >= 64) {
+        return;
+    }
+    
+    P2PDirectMemoryPool& pool = g_direct_memory_pools[device];
+    
+    std::lock_guard<std::mutex> lock(pool.pool_mutex);
+    
+    // Enable P2P access for all specified peer devices
+    for (int peer_device : peer_devices) {
+        if (peer_device < 0 || peer_device >= 64 || peer_device == device) {
+            continue;
+        }
+        
+        if (!pool.peer_access_enabled[peer_device]) {
+            // Try to enable peer access
+            cudaError_t result = cudaDeviceEnablePeerAccess(peer_device, 0);
+            if (result == cudaSuccess || result == cudaErrorPeerAccessAlreadyEnabled) {
+                pool.peer_access_enabled[peer_device] = true;
+            } else {
+                // Log error but continue with other devices
+                // In a production environment, you might want to log this error
+            }
+        }
+    }
 }

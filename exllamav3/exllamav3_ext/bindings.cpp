@@ -142,6 +142,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("p2p_unregister_peer_memory", &p2p_unregister_peer_memory, "p2p_unregister_peer_memory");
     m.def("p2p_get_direct_pool_usage", &p2p_get_direct_pool_usage, "p2p_get_direct_pool_usage");
     m.def("p2p_get_direct_pool_size", &p2p_get_direct_pool_size, "p2p_get_direct_pool_size");
+    m.def("p2p_enable_all_peer_access", &p2p_enable_all_peer_access, "p2p_enable_all_peer_access");
 
     m.def("quantize_tiles", &quantize_tiles, "quantize_tiles");
     m.def("test_distribution", &test_distribution, "test_distribution");

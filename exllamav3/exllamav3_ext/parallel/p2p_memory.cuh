@@ -104,3 +104,10 @@ size_t p2p_get_direct_pool_size(
     int device,
     at::Tensor& abort_flag
 );
+
+// Centralized P2P access management
+void p2p_enable_all_peer_access(
+    int device,
+    std::vector<int> peer_devices,
+    at::Tensor& abort_flag
+);

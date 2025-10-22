@@ -138,14 +138,7 @@ void p2p_copy_tensor_async(
     
     size_t size = src_tensor.numel() * src_tensor.element_size();
     
-    // Enable P2P access if not already enabled
-    cudaError_t result = cudaDeviceEnablePeerAccess(dst_device, 0);
-    if (result != cudaSuccess && result != cudaErrorPeerAccessAlreadyEnabled) {
-        uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
-        *abort_flag_ptr = 1;
-        return;
-    }
-    
+    // P2P access should have been enabled during initialization
     // Use cudaMemcpyPeerAsync for direct GPU-to-GPU copy
     result = cudaMemcpyPeerAsync(
         dst_tensor.data_ptr(),
@@ -177,14 +170,7 @@ void p2p_copy_tensor_sync(
     
     size_t size = src_tensor.numel() * src_tensor.element_size();
     
-    // Enable P2P access if not already enabled
-    cudaError_t result = cudaDeviceEnablePeerAccess(dst_device, 0);
-    if (result != cudaSuccess && result != cudaErrorPeerAccessAlreadyEnabled) {
-        uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
-        *abort_flag_ptr = 1;
-        return;
-    }
-    
+    // P2P access should have been enabled during initialization
     // Use cudaMemcpyPeer for synchronous direct GPU-to-GPU copy
     result = cudaMemcpyPeer(
         dst_tensor.data_ptr(),
@@ -213,14 +199,7 @@ void p2p_copy_tensor_batch(
         return;
     }
     
-    // Enable P2P access if not already enabled
-    cudaError_t result = cudaDeviceEnablePeerAccess(dst_device, 0);
-    if (result != cudaSuccess && result != cudaErrorPeerAccessAlreadyEnabled) {
-        uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
-        *abort_flag_ptr = 1;
-        return;
-    }
-    
+    // P2P access should have been enabled during initialization
     // Copy all tensors asynchronously
     for (size_t i = 0; i < src_tensors.size(); i++) {
         if (src_tensors[i].numel() != dst_tensors[i].numel()) {
@@ -414,14 +393,7 @@ void p2p_copy_tensor_2d_async(
 ) {
     size_t width = src_tensor.numel() / height;
     
-    // Enable P2P access if not already enabled
-    cudaError_t result = cudaDeviceEnablePeerAccess(dst_device, 0);
-    if (result != cudaSuccess && result != cudaErrorPeerAccessAlreadyEnabled) {
-        uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
-        *abort_flag_ptr = 1;
-        return;
-    }
-    
+    // P2P access should have been enabled during initialization
     // Use cudaMemcpy3DPeerAsync for 2D copy (with depth=1)
     cudaMemcpy3DPeerParms params = {};
     params.srcDevice = src_device;
@@ -460,14 +432,7 @@ void p2p_copy_tensor_3d_async(
     cudaExtent extent,
     at::Tensor& abort_flag
 ) {
-    // Enable P2P access if not already enabled
-    cudaError_t result = cudaDeviceEnablePeerAccess(dst_device, 0);
-    if (result != cudaSuccess && result != cudaErrorPeerAccessAlreadyEnabled) {
-        uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
-        *abort_flag_ptr = 1;
-        return;
-    }
-    
+    // P2P access should have been enabled during initialization
     // Use cudaMemcpy3DPeerAsync for 3D copy
     cudaMemcpy3DPeerParms params = {};
     params.srcDevice = src_device;
@@ -521,16 +486,7 @@ float p2p_measure_bandwidth(
         return 0.0f;
     }
     
-    // Enable P2P access
-    result = cudaDeviceEnablePeerAccess(dst_device, 0);
-    if (result != cudaSuccess && result != cudaErrorPeerAccessAlreadyEnabled) {
-        cudaFree(src_buffer);
-        cudaFree(dst_buffer);
-        uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
-        *abort_flag_ptr = 1;
-        return 0.0f;
-    }
-    
+    // P2P access should have been enabled during initialization
     // Warm up
     for (int i = 0; i < 5; i++) {
         cudaMemcpyPeerAsync(dst_buffer, dst_device, src_buffer, src_device, size, 0);
@@ -602,16 +558,7 @@ float p2p_measure_latency(
         return 0.0f;
     }
     
-    // Enable P2P access
-    result = cudaDeviceEnablePeerAccess(dst_device, 0);
-    if (result != cudaSuccess && result != cudaErrorPeerAccessAlreadyEnabled) {
-        cudaFree(src_buffer);
-        cudaFree(dst_buffer);
-        uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
-        *abort_flag_ptr = 1;
-        return 0.0f;
-    }
-    
+    // P2P access should have been enabled during initialization
     // Measure latency
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -669,11 +616,7 @@ bool p2p_validate_memory_access(
     
     size_t test_size = min(size, (size_t)1024);  // Test with at most 1KB
     
-    result = cudaDeviceEnablePeerAccess(dst_device, 0);
-    if (result != cudaSuccess && result != cudaErrorPeerAccessAlreadyEnabled) {
-        return false;
-    }
-    
+    // P2P access should have been enabled during initialization
     result = cudaMemcpyPeerAsync(dst_ptr, dst_device, src_ptr, src_device, test_size, 0);
     if (result != cudaSuccess) {
         return false;
@@ -702,14 +645,7 @@ void p2p_copy_tensor_with_offset(
         return;
     }
     
-    // Enable P2P access if not already enabled
-    cudaError_t result = cudaDeviceEnablePeerAccess(dst_device, 0);
-    if (result != cudaSuccess && result != cudaErrorPeerAccessAlreadyEnabled) {
-        uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
-        *abort_flag_ptr = 1;
-        return;
-    }
-    
+    // P2P access should have been enabled during initialization
     // Copy with offsets
     char* src_ptr = (char*)src_tensor.data_ptr() + src_offset;
     char* dst_ptr = (char*)dst_tensor.data_ptr() + dst_offset;
@@ -743,14 +679,7 @@ void p2p_copy_tensor_strided(
     size_t total_elements = src_tensor.numel();
     size_t element_size = src_tensor.element_size();
     
-    // Enable P2P access if not already enabled
-    cudaError_t result = cudaDeviceEnablePeerAccess(dst_device, 0);
-    if (result != cudaSuccess && result != cudaErrorPeerAccessAlreadyEnabled) {
-        uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
-        *abort_flag_ptr = 1;
-        return;
-    }
-    
+    // P2P access should have been enabled during initialization
     // Copy element by element (simplified implementation)
     for (size_t i = 0; i < total_elements; i++) {
         size_t src_offset = i * element_size;

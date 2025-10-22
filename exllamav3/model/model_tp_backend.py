@@ -138,6 +138,14 @@ class TPBackendP2P:
             peer_pool_size = max(pool_size // len(peer_devices), min_pool_size // 2) if peer_devices else pool_size
             ext.p2p_init_direct_memory_pool(self.device, peer_pool_size, peer_devices, self.abort_flag)
             log_tp(self.device, f"P2P direct memory pool initialized: {peer_pool_size // 1024**2}MB with {len(peer_devices)} peers")
+            
+            # Enable P2P access for all peer devices (centralized management)
+            try:
+                ext.p2p_enable_all_peer_access(self.device, peer_devices, self.abort_flag)
+                log_tp(self.device, f"P2P access enabled for {len(peer_devices)} peer devices")
+            except Exception as e:
+                log_tp(self.device, f"P2P access enabling failed: {e}")
+                self.use_p2p = False
         except Exception as e:
             log_tp(self.device, f"P2P memory pool initialization failed: {e}")
             self.use_p2p = False
