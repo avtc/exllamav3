@@ -695,9 +695,9 @@ void p2p_enable_all_peer_access(
                 printf("ERROR: Failed to enable P2P access from device %d to %d: %s\n",
                        device, peer_device, cudaGetErrorString(result));
                 
-                // Only set abort flag on critical failures (like allocation errors)
+                // Only set abort flag on critical failures
                 // Don't set abort for P2P access failures as they can happen and system can continue
-                if (result == cudaErrorOutOfMemory || result == cudaErrorInvalidValue) {
+                if (result == cudaErrorInvalidValue) {
                     if (abort_flag.defined()) {
                         uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
                         *abort_flag_ptr = 1;
