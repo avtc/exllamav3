@@ -140,7 +140,7 @@ void p2p_copy_tensor_async(
     
     // P2P access should have been enabled during initialization
     // Use cudaMemcpyPeerAsync for direct GPU-to-GPU copy
-    result = cudaMemcpyPeerAsync(
+    cudaError_t result = cudaMemcpyPeerAsync(
         dst_tensor.data_ptr(),
         dst_device,
         src_tensor.data_ptr(),
@@ -172,7 +172,7 @@ void p2p_copy_tensor_sync(
     
     // P2P access should have been enabled during initialization
     // Use cudaMemcpyPeer for synchronous direct GPU-to-GPU copy
-    result = cudaMemcpyPeer(
+    cudaError_t result = cudaMemcpyPeer(
         dst_tensor.data_ptr(),
         dst_device,
         src_tensor.data_ptr(),
@@ -209,7 +209,7 @@ void p2p_copy_tensor_batch(
         }
         
         size_t size = src_tensors[i].numel() * src_tensors[i].element_size();
-        result = cudaMemcpyPeerAsync(
+        cudaError_t result = cudaMemcpyPeerAsync(
             dst_tensors[i].data_ptr(),
             dst_device,
             src_tensors[i].data_ptr(),
@@ -414,7 +414,7 @@ void p2p_copy_tensor_2d_async(
     // Setup extent (width in bytes, height, depth=1)
     params.extent = make_cudaExtent(width * src_tensor.element_size(), height, 1);
     
-    result = cudaMemcpy3DPeerAsync(&params, 0);
+    cudaError_t result = cudaMemcpy3DPeerAsync(&params, 0);
     
     if (result != cudaSuccess) {
         uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
@@ -441,7 +441,7 @@ void p2p_copy_tensor_3d_async(
     params.dstPtr = dst_pitched_ptr;
     params.extent = extent;
     
-    result = cudaMemcpy3DPeerAsync(&params, 0);
+    cudaError_t result = cudaMemcpy3DPeerAsync(&params, 0);
     
     if (result != cudaSuccess) {
         uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
@@ -617,7 +617,7 @@ bool p2p_validate_memory_access(
     size_t test_size = min(size, (size_t)1024);  // Test with at most 1KB
     
     // P2P access should have been enabled during initialization
-    result = cudaMemcpyPeerAsync(dst_ptr, dst_device, src_ptr, src_device, test_size, 0);
+    cudaError_t result = cudaMemcpyPeerAsync(dst_ptr, dst_device, src_ptr, src_device, test_size, 0);
     if (result != cudaSuccess) {
         return false;
     }
@@ -686,9 +686,9 @@ void p2p_copy_tensor_strided(
         size_t dst_offset = i * element_size;
         
         char* src_ptr = (char*)src_tensor.data_ptr() + src_offset;
-        char* dst_ptr = (char*)dst_tensor.data_ptr() + dst_offset;
-        
-        result = cudaMemcpyPeerAsync(dst_ptr, dst_device, src_ptr, src_device, element_size, 0);
+       char* dst_ptr = (char*)dst_tensor.data_ptr() + dst_offset;
+       
+       cudaError_t result = cudaMemcpyPeerAsync(dst_ptr, dst_device, src_ptr, src_device, element_size, 0);
         
         if (result != cudaSuccess) {
             uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
