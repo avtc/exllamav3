@@ -147,13 +147,14 @@ torch::Tensor test_p2p_gather(torch::Tensor tensor, const std::vector<int>& devi
     std::vector<uintptr_t> device_ptrs(devices.begin(), devices.end());
     
     // Call P2P gather
+    c10::optional<at::Tensor> out_tensor_optional(out_tensor);
     pg_gather_full_p2p(
         reinterpret_cast<uintptr_t>(pg_ctx),
         device_ptrs,
         this_device,
         out_device,
         tensor,
-        out_tensor,
+        out_tensor_optional,
         ldims,
         reinterpret_cast<uintptr_t>(shbuf),
         shbuf_size,
