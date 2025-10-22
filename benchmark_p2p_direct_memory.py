@@ -271,20 +271,9 @@ def main():
         print("Error: At least 2 GPU devices are required for P2P benchmarks")
         return
     
-    # Initialize P2P topology
-    try:
-        topology = P2PTopology(devices)
-        topology_summary = topology.get_topology_summary()
-        print(f"P2P Topology: {topology_summary}")
-        
-        if topology_summary.get("connectivity_ratio", 0) == 0:
-            print("Warning: No P2P connectivity detected between devices")
-            return
-    except Exception as e:
-        print(f"Error initializing P2P topology: {e}")
-        return
-    
-    # Initialize backend for each device
+    # Initialize backend for each device without topology detection
+    # to avoid peer access conflicts
+    print("Initializing P2P backends without topology detection...")
     backends = {}
     for device in devices:
         try:
@@ -301,30 +290,6 @@ def main():
         except Exception as e:
             print(f"Error initializing backend for device {device}: {e}")
             return
-    
-    # Clean up P2P topology to avoid peer access conflicts
-    # The topology detection enables peer access, but we want the backend to manage it
-    print("Cleaning up P2P topology to avoid conflicts...")
-    for device in devices:
-        try:
-            # Disable peer access that was enabled during topology detection
-            for peer_device in devices:
-                if device != peer_device:
-                    try:
-                        ext.p2p_disable_peer_access(device, peer_device, backends[device].abort_flag)
-                    except:
-                        pass  # Ignore errors during cleanup
-        except:
-            pass  # Ignore errors during cleanup
-    
-    # Re-initialize P2P memory pools after cleanup
-    print("Re-initializing P2P memory pools...")
-    for device in devices:
-        try:
-            backends[device]._init_p2p_memory_pool()
-            print(f"Re-initialized P2P memory pool for device {device}")
-        except Exception as e:
-            print(f"Error re-initializing memory pool for device {device}: {e}")
     
     try:
         # Run benchmarks

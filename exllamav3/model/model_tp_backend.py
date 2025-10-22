@@ -65,26 +65,15 @@ class TPBackendP2P:
         
         self.auto_fallback = auto_fallback
         
-        # Initialize P2P topology detection
+        # Skip P2P topology detection to avoid peer access conflicts
+        # We'll assume P2P is available and let the memory pool initialization handle it
         if master:
-            try:
-                self.p2p_topology = P2PTopology(active_devices)
-                topology_summary = self.p2p_topology.get_topology_summary()
-                log_tp(device, f"P2P topology: {topology_summary}")
-                print(f" -- P2P topology: {topology_summary}")
-                
-                # If P2P is not available, fall back to native backend
-                if topology_summary.get("connectivity_ratio", 0) == 0:
-                    log_tp(device, "P2P not available, falling back to native backend")
-                    self.use_p2p = False
-                else:
-                    self.use_p2p = True
-                    # Initialize P2P memory pool
-                    self._init_p2p_memory_pool()
-            except Exception as e:
-                log_tp(device, f"P2P topology detection failed: {e}, falling back to native backend")
-                self.p2p_topology = None
-                self.use_p2p = False
+            log_tp(device, "Skipping P2P topology detection to avoid conflicts")
+            print(f" -- Skipping P2P topology detection to avoid conflicts")
+            self.p2p_topology = None
+            self.use_p2p = True
+            # Initialize P2P memory pool
+            self._init_p2p_memory_pool()
         else:
             # Non-master processes will get topology from shared memory
             self.p2p_topology = None
@@ -144,21 +133,11 @@ class TPBackendP2P:
             log_tp(self.device, f"P2P memory pool initialized: {pool_size // 1024**2}MB ({pool_size} bytes)")
             
             # Initialize direct memory pool for P2P access with peer-specific sizing
-            if self.p2p_topology:
-                peer_devices = [d for d in self.active_devices if d != self.device]
-                # Adjust pool size based on number of peers
-                peer_pool_size = max(pool_size // len(peer_devices), min_pool_size // 2) if peer_devices else pool_size
-                ext.p2p_init_direct_memory_pool(self.device, peer_pool_size, peer_devices, self.abort_flag)
-                log_tp(self.device, f"P2P direct memory pool initialized: {peer_pool_size // 1024**2}MB with {len(peer_devices)} peers")
-                
-                # Enable peer access for all available peers
-                for peer_device in peer_devices:
-                    if self.p2p_topology.can_access_peer(self.device, peer_device):
-                        try:
-                            ext.p2p_enable_peer_access(self.device, peer_device, self.abort_flag)
-                            log_tp(self.device, f"P2P peer access enabled: {peer_device}")
-                        except Exception as e:
-                            log_tp(self.device, f"P2P peer access failed for {peer_device}: {e}")
+            peer_devices = [d for d in self.active_devices if d != self.device]
+            # Adjust pool size based on number of peers
+            peer_pool_size = max(pool_size // len(peer_devices), min_pool_size // 2) if peer_devices else pool_size
+            ext.p2p_init_direct_memory_pool(self.device, peer_pool_size, peer_devices, self.abort_flag)
+            log_tp(self.device, f"P2P direct memory pool initialized: {peer_pool_size // 1024**2}MB with {len(peer_devices)} peers")
         except Exception as e:
             log_tp(self.device, f"P2P memory pool initialization failed: {e}")
             self.use_p2p = False
@@ -195,7 +174,7 @@ class TPBackendP2P:
         start_time = time.time()
         success = True
         
-        if not self.use_p2p or not self.p2p_topology:
+        if not self.use_p2p:
             self.fallback.broadcast(tensor, src_device)
             # Record fallback operation
             if self.monitor:
@@ -225,7 +204,8 @@ class TPBackendP2P:
                 )
             
             # Check if P2P is available between source and this device
-            if self.p2p_topology.can_access_peer(src_device, self.device):
+            # Since we skipped topology detection, we'll assume P2P is available
+            if src_device != self.device:
                 # Use direct memory copy for broadcast when possible
                 if self.device != src_device:
                     # Create a temporary tensor on this device for direct copy
@@ -297,7 +277,7 @@ class TPBackendP2P:
         success = True
         algorithm = None
         
-        if not self.use_p2p or not self.p2p_topology:
+        if not self.use_p2p:
             self.fallback.all_reduce(tensor, contribution)
             # Record fallback operation
             if self.monitor:
@@ -328,9 +308,9 @@ class TPBackendP2P:
             # Get tensor size for adaptive algorithm selection
             tensor_size = tensor.numel() * tensor.element_size()
             
-            # Select optimal reduction algorithm based on tensor size and topology
-            algorithm = self.p2p_topology.select_reduce_algorithm(tensor_size)
-            connectivity_ratio = self.p2p_topology.get_connectivity_ratio()
+            # Since we skipped topology detection, use default algorithm
+            algorithm = "ring"  # Default to ring algorithm
+            connectivity_ratio = 1.0  # Assume full connectivity
             
             # Optimize tensor layout for better performance
             if not tensor.is_contiguous():
@@ -426,7 +406,7 @@ class TPBackendP2P:
         start_time = time.time()
         success = True
         
-        if not self.use_p2p or not self.p2p_topology:
+        if not self.use_p2p:
             self.fallback.gather(tensor, out_tensor, gather_devices, out_device, ldims)
             # Record fallback operation
             if self.monitor:
@@ -461,12 +441,8 @@ class TPBackendP2P:
             else:
                 gather_devices_list = gather_devices.tolist()
                 
-            # Check if we can use direct P2P gather
+            # Since we skipped topology detection, assume we can use direct P2P gather
             can_use_direct = True
-            for device in gather_devices_list:
-                if device != out_device and not self.p2p_topology.can_access_peer(device, out_device):
-                    can_use_direct = False
-                    break
                     
             if can_use_direct and self.device != out_device:
                 # Use direct memory copy for gather when possible
@@ -553,7 +529,7 @@ class TPBackendP2P:
         success = True
         result_tensor = None
         
-        if not self.use_p2p or not self.p2p_topology:
+        if not self.use_p2p:
             # Fallback to traditional copy
             if self.device == dst_device:
                 tensor_copy = torch.empty_like(tensor, device=self.device)
@@ -657,7 +633,7 @@ class TPBackendP2P:
 
     def measure_p2p_bandwidth(self, src_device: int, dst_device: int, size_mb: int = 64, num_iterations: int = 10):
         """Measure P2P bandwidth between two devices."""
-        if not self.use_p2p or not self.p2p_topology:
+        if not self.use_p2p:
             return 0.0
         
         try:
@@ -671,7 +647,7 @@ class TPBackendP2P:
 
     def measure_p2p_latency(self, src_device: int, dst_device: int, size_kb: int = 4, num_iterations: int = 100):
         """Measure P2P latency between two devices."""
-        if not self.use_p2p or not self.p2p_topology:
+        if not self.use_p2p:
             return 0.0
         
         try:
