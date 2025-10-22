@@ -229,8 +229,8 @@ def benchmark_memory_pool_performance(backend, device, allocation_sizes_mb, num_
         end_time = time.time()
         dealloc_time = end_time - start_time
         
-        alloc_rate = num_allocations / alloc_time
-        dealloc_rate = num_allocations / dealloc_time
+        alloc_rate = num_allocations / alloc_time if alloc_time > 0 else float('inf')
+        dealloc_rate = num_allocations / dealloc_time if dealloc_time > 0 else float('inf')
         
         results[size_mb] = {
             'alloc_rate': alloc_rate,
@@ -239,7 +239,10 @@ def benchmark_memory_pool_performance(backend, device, allocation_sizes_mb, num_
             'dealloc_time_ms': dealloc_time * 1000
         }
         
-        print(f"Size: {size_mb:4d} MB | Alloc: {alloc_rate:8.1f} ops/s | Dealloc: {dealloc_rate:8.1f} ops/s")
+        # Format output to handle infinite rates
+        alloc_str = f"{alloc_rate:8.1f}" if alloc_rate != float('inf') else "      inf"
+        dealloc_str = f"{dealloc_rate:8.1f}" if dealloc_rate != float('inf') else "      inf"
+        print(f"Size: {size_mb:4d} MB | Alloc: {alloc_str} ops/s | Dealloc: {dealloc_str} ops/s")
     
     return results
 
