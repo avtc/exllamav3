@@ -2,6 +2,8 @@
 #include "barrier.cuh"
 #include <c10/cuda/CUDAGuard.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <cooperative_groups.h>
+namespace cg = cooperative_groups;
 #include "../util.h"
 #include "../util.cuh"
 #include "../ptx.cuh"
@@ -140,6 +142,7 @@ void pg_barrier_full_p2p
     }
 
     uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
+    int num_devices = peer_devices.size();
     void* kernelArgs[] =
     {
         (void*)& ctx,
@@ -147,7 +150,7 @@ void pg_barrier_full_p2p
         (void*)& this_device,
         (void*)& abort_flag_ptr,
         (void*) peer_devices.data(),
-        (void*)& peer_devices.size()
+        (void*)& num_devices
     };
 
     dim3 block_grid(1);
