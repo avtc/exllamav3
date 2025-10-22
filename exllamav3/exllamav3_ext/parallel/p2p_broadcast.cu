@@ -150,7 +150,7 @@ void p2p_broadcast_ll_kernel
                     
                     if (t < bytes_to_copy / 4)
                     {
-                        synced_write_uint32(dst + t, src[t], cookie);
+                        synced_write_uint32((uint64_t*)(dst + t), src[t], cookie);
                     }
                     
                     offset += chunk_size;
@@ -225,7 +225,7 @@ void p2p_broadcast
 void p2p_broadcast_ll
 (
     uintptr_t ctx,
-    std::vector<uintuintptr_t> devices,
+    std::vector<uintptr_t> devices,
     int this_device,
     int src_device,
     at::Tensor& tensor,
