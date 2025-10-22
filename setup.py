@@ -2,10 +2,7 @@ from setuptools import setup, find_packages
 import importlib.util
 import os
 
-torch_spec = importlib.util.find_spec("torch")
-torch_installed = torch_spec is not None
-
-if torch_installed:
+if torch := importlib.util.find_spec("torch") is not None:
     from torch.utils import cpp_extension
     from torch import version as torch_version
 
@@ -14,7 +11,7 @@ precompile = "EXLLAMA_NOCOMPILE" not in os.environ
 verbose = "EXLLAMA_VERBOSE" in os.environ
 ext_debug = "EXLLAMA_EXT_DEBUG" in os.environ
 
-if precompile and not torch_installed:
+if precompile and not torch:
     print("Cannot precompile unless torch is installed.")
     print("To explicitly JIT install run EXLLAMA_NOCOMPILE= pip install <xyz>")
 
@@ -36,7 +33,7 @@ else:
         extra_cflags += ["-ftime-report", "-DTORCH_USE_CUDA_DSA"]
         extra_cuda_cflags += []
 
-if torch_installed and torch_version.hip:
+if torch and torch_version.hip:
     extra_cuda_cflags += ["-DHIPBLAS_USE_HIP_HALF"]
 
 extra_compile_args = {
@@ -67,7 +64,7 @@ setup_kwargs = (
         ],
         "cmdclass": {"build_ext": cpp_extension.BuildExtension},
     }
-    if precompile and torch_installed
+    if precompile and torch
     else {}
 )
 
