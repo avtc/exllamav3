@@ -441,7 +441,6 @@ void p2p_copy_tensor_2d_async(
     
     // Setup extent (width in bytes, height, depth=1)
     params.extent = make_cudaExtent(width * src_tensor.element_size(), height, 1);
-    params.kind = cudaMemcpyDeviceToDevice;
     
     result = cudaMemcpy3DPeerAsync(&params, 0);
     
@@ -476,7 +475,6 @@ void p2p_copy_tensor_3d_async(
     params.srcPtr = src_pitched_ptr;
     params.dstPtr = dst_pitched_ptr;
     params.extent = extent;
-    params.kind = cudaMemcpyDeviceToDevice;
     
     result = cudaMemcpy3DPeerAsync(&params, 0);
     
