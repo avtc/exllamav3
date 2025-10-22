@@ -650,7 +650,7 @@ void p2p_copy_tensor_with_offset(
     char* src_ptr = (char*)src_tensor.data_ptr() + src_offset;
     char* dst_ptr = (char*)dst_tensor.data_ptr() + dst_offset;
     
-    result = cudaMemcpyPeerAsync(dst_ptr, dst_device, src_ptr, src_device, size, 0);
+    cudaError_t result = cudaMemcpyPeerAsync(dst_ptr, dst_device, src_ptr, src_device, size, 0);
     
     if (result != cudaSuccess) {
         uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
