@@ -60,8 +60,6 @@ void p2p_tree_reduce_kernel_up(
     
     // Reduce phase: collect data from children
     for (int child_idx = 0; child_idx < my_tree.num_children; ++child_idx) {
-        int child_device = my_tree.children[child_idx];
-        
         // Process data in chunks
         size_t chunk_size = reduce_stage_size;
         size_t num_chunks = CEIL_DIVIDE(data_size, chunk_size);
@@ -117,8 +115,6 @@ void p2p_tree_reduce_kernel_down(
     // Broadcast phase: distribute reduced data to children
     if (my_tree.num_children > 0) {
         for (int child_idx = 0; child_idx < my_tree.num_children; ++child_idx) {
-            int child_device = my_tree.children[child_idx];
-            
             // Process data in chunks
             size_t chunk_size = reduce_stage_size;
             size_t num_chunks = CEIL_DIVIDE(data_size, chunk_size);
