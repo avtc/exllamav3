@@ -41,6 +41,7 @@
 #include "parallel/barrier.cuh"
 #include "parallel/gather.cuh"
 #include "parallel/all_reduce.cuh"
+#include "parallel/p2p_memory.cuh"
 
 #include "libtorch/gated_delta_net.h"
 #include "libtorch/linear.h"
@@ -77,6 +78,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("pg_all_reduce_cpu", &pg_all_reduce_cpu, "pg_all_reduce_cpu");
     m.def("run_cpu_reduce_jobs", &run_cpu_reduce_jobs, "run_cpu_reduce_jobs");
     m.def("end_cpu_reduce_jobs", &end_cpu_reduce_jobs, "end_cpu_reduce_jobs");
+
+    // P2P kernel exports
+    m.def("pg_all_reduce_full_p2p", &pg_all_reduce_full_p2p, "pg_all_reduce_full_p2p");
+    m.def("pg_broadcast_full_p2p", &pg_broadcast_full_p2p, "pg_broadcast_full_p2p");
+    m.def("pg_gather_full_p2p", &pg_gather_full_p2p, "pg_gather_full_p2p");
+    m.def("pg_barrier_full_p2p", &pg_barrier_full_p2p, "pg_barrier_full_p2p");
+
+    // P2P memory management exports
+    m.def("detect_full_p2p_connectivity", &detect_full_p2p_connectivity, "detect_full_p2p_connectivity");
+    m.def("init_p2p_context", &init_p2p_context, "init_p2p_context");
+    m.def("destroy_p2p_context", &destroy_p2p_context, "destroy_p2p_context");
+    m.def("p2p_memcpy_async", &p2p_memcpy_async, "p2p_memcpy_async");
+    m.def("p2p_memcpy", &p2p_memcpy, "p2p_memcpy");
+    m.def("p2p_sync", &p2p_sync, "p2p_sync");
+    m.def("p2p_barrier", &p2p_barrier, "p2p_barrier");
+    m.def("validate_p2p_connectivity", &validate_p2p_connectivity, "validate_p2p_connectivity");
 
     m.def("quantize_tiles", &quantize_tiles, "quantize_tiles");
     m.def("test_distribution", &test_distribution, "test_distribution");

@@ -13,7 +13,14 @@ from .config import Config
 from ..util.misc import Cleanupper
 from .model_tp_shared import SMProducer
 from .model_tp_fn import *
-from .model_tp_backend import TPBackend, TPBackendNCCL, TPBackendNative
+from .model_tp_backend import (
+    TPBackend,
+    TPBackendNCCL,
+    TPBackendNative,
+    TPBackendP2P,
+    create_tp_backend,
+    get_available_backends
+)
 import uuid
 from ..util import log_tp, global_t0
 
@@ -45,22 +52,12 @@ class Model_TPMixin:
         self.tp_backend = tp_backend
         master_addr = os.environ.get("EXLLAMA_MASTER_ADDR", "127.0.0.1")
         master_port = os.environ.get("EXLLAMA_MASTER_PORT", find_free_port())
-        match tp_backend:
-            case "nccl":
-                # Master address and port for the process group
-                backend_args = {
-                    "type": tp_backend,
-                    "init_method": f"tcp://{master_addr}:{master_port}",
-                    "uuid": uuid.uuid4().hex,
-                }
-            case "native":
-                backend_args = {
-                    "type": tp_backend,
-                    "init_method": f"tcp://{master_addr}:{master_port}",
-                    "uuid": uuid.uuid4().hex,
-                }
-            case _:
-                raise ValueError(f"Unkwown backend type: {tp_backend}")
+        # Backend args
+        backend_args = {
+            "type": tp_backend,
+            "init_method": f"tcp://{master_addr}:{master_port}",
+            "uuid": uuid.uuid4().hex,
+        }
 
         # Spawn child processes, each running the mp_model_worker function
         num_devices = max(self.active_devices) + 1

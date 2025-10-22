@@ -10,3 +10,12 @@ void pg_barrier
     int this_device,
     at::Tensor& abort_flag
 );
+
+// P2P-optimized barrier kernel for fully connected systems
+void pg_barrier_full_p2p
+(
+    uintptr_t ctx,
+    std::vector<uintptr_t> devices,
+    int this_device,
+    at::Tensor& abort_flag
+);

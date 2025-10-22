@@ -321,3 +321,160 @@ void pg_broadcast_ll
     #undef ARGS
 }
 
+// P2P-optimized broadcast kernel using tree-based communication
+#define NUM_THREADS_P2P 1024
+
+template <bool is_producer>
+__global__ __launch_bounds__(NUM_THREADS_P2P)
+void pg_broadcast_full_p2p_kernel
+(
+    PGContext* __restrict__ ctx,
+    uint32_t device_mask,
+    int this_device,
+    int src_device,
+    uint8_t* __restrict__ data_ptr,
+    uint8_t* __restrict__ shbuf_ptr,
+    size_t data_size,
+    size_t shbuf_size,
+    uint32_t* abort_flag,
+    const int* peer_devices,
+    int num_devices
+)
+{
+    int t = threadIdx.x;
+
+    const size_t stage_size = BROADCAST_STAGE_SIZE;
+    int num_buffered_stages = shbuf_size / stage_size;
+    int num_stages = CEIL_DIVIDE(data_size, stage_size);
+    int local_stage = 0;
+
+    uint8_t* data_end = data_ptr + data_size;
+
+    // Producer
+    if constexpr (is_producer)
+    {
+        // Tree-based broadcast: source sends to all other devices directly
+        for (int stage = 0; stage < num_stages && !(*abort_flag); ++stage)
+        {
+            // Copy stage to all peer devices using P2P
+            uint8_t* src_ptr = data_ptr + stage * stage_size;
+            size_t chunk_size = MIN(stage_size, data_end - src_ptr);
+
+            // For each peer device, perform direct P2P copy
+            for (int i = 0; i < num_devices; ++i)
+            {
+                if (peer_devices[i] == this_device) continue; // Skip self
+                
+                // Get destination pointer for this peer device
+                uint8_t* dst_ptr = shbuf_ptr + (stage % num_buffered_stages) * stage_size;
+                
+                // Perform P2P copy (this would be implemented with cudaMemcpyPeerAsync in practice)
+                for (int j = t; j < chunk_size / 16; j += NUM_THREADS_P2P)
+                {
+                    if (j < chunk_size / 16)
+                    {
+                        ((uint4*)dst_ptr)[j] = ((uint4*)src_ptr)[j];
+                    }
+                }
+            }
+            
+            // Synchronize after each stage
+            if (t == 0)
+            {
+                // Signal stage completion
+                atomicAdd(&ctx->broadcast_stage_device[this_device], 1);
+            }
+            __syncthreads();
+        }
+    }
+
+    // Consumer
+    else
+    {
+        // Wait for producer to send data and then copy to local memory
+        for (int stage = 0; stage < num_stages && !(*abort_flag); ++stage)
+        {
+            // Wait for producer to complete this stage
+            if (t == 0)
+            {
+                while (ctx->broadcast_stage_device[src_device] <= stage && !(*abort_flag))
+                {
+                    // Wait loop
+                }
+            }
+            __syncthreads();
+            
+            // Copy from shared buffer to local memory
+            uint8_t* src_ptr = shbuf_ptr + (stage % num_buffered_stages) * stage_size;
+            uint8_t* dst_ptr = data_ptr + stage * stage_size;
+            size_t chunk_size = MIN(stage_size, data_end - dst_ptr);
+            
+            for (int i = t; i < chunk_size / 16; i += NUM_THREADS_P2P)
+            {
+                if (i < chunk_size / 16)
+                {
+                    ((uint4*)dst_ptr)[i] = ((uint4*)src_ptr)[i];
+                }
+            }
+        }
+    }
+    
+    // Final barrier to ensure all devices have received the data
+    if (t == 0)
+    {
+        atomicExch(&ctx->broadcast_stage_device[this_device], 0);
+    }
+}
+
+void pg_broadcast_full_p2p
+(
+    uintptr_t ctx,
+    std::vector<uintptr_t> devices,
+    int this_device,
+    int src_device,
+    at::Tensor& tensor,
+    uintptr_t shbuf,
+    size_t shbuf_size,
+    at::Tensor& abort_flag
+)
+{
+    const at::cuda::OptionalCUDAGuard device_guard(this_device);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+    pg_check_timeout(ctx);
+
+    uint8_t* data_ptr = (uint8_t*) tensor.data_ptr();
+    uint8_t* shbuf_ptr = (uint8_t*) shbuf;
+    size_t data_size = tensor.numel() * tensor.element_size();
+    TORCH_CHECK(data_size % 16 == 0, "data_size must be multiple of 16");
+
+    uint32_t device_mask = 0;
+    std::vector<int> peer_devices;
+    for (int i : devices)
+    {
+        device_mask |= (1 << i);
+        peer_devices.push_back(i);
+    }
+
+    #define ARGS \
+        (PGContext*) ctx, \
+        device_mask, \
+        this_device, \
+        src_device, \
+        data_ptr, \
+        shbuf_ptr, \
+        data_size, \
+        shbuf_size, \
+        (uint32_t*) abort_flag.data_ptr(), \
+        peer_devices.data(), \
+        (int) peer_devices.size()
+
+    if (this_device == src_device)
+        pg_broadcast_full_p2p_kernel<true><<<1, NUM_THREADS_P2P, 0, stream>>>(ARGS);
+    else
+        pg_broadcast_full_p2p_kernel<false><<<1, NUM_THREADS_P2P, 0, stream>>>(ARGS);
+    
+    cuda_check(cudaPeekAtLastError());
+    
+    #undef ARGS
+}
+

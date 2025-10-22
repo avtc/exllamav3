@@ -2,7 +2,14 @@ import torch
 import torch.distributed as dist
 import time
 import numpy as np
-from .model_tp_cuda import cuda_host_register, cuda_host_unregister, CUDA_HOST_REGISTER_PORTABLE
+from .model_tp_cuda import (
+    cuda_host_register,
+    cuda_host_unregister,
+    CUDA_HOST_REGISTER_PORTABLE,
+    check_p2p_connectivity,
+    enable_p2p_access,
+    disable_p2p_access
+)
 from ..ext import exllamav3_ext as ext
 from multiprocessing import shared_memory, Barrier
 from ..util import log_tp
@@ -399,3 +406,199 @@ class TPBackendNative:
             ext.end_cpu_reduce_jobs(
                 self.ptr_g,
             )
+
+
+# Import TPBackendP2P for P2P connectivity support
+try:
+    from .model_tp_backend_p2p import TPBackendP2P
+    TPBackendP2P_AVAILABLE = True
+except ImportError:
+    TPBackendP2P_AVAILABLE = False
+    TPBackendP2P = None
+
+
+def create_tp_backend(
+    backend_type: str,
+    device: int,
+    active_devices: list[int],
+    output_device: int,
+    init_method: str,
+    master: bool,
+    uuid: str,
+    shbuf_size: int = SHBUF_SIZE,
+) -> TPBackend:
+    """
+    Factory function to create tensor parallel backend with automatic P2P detection.
+    
+    This function provides a unified interface for creating different types of tensor
+    parallel backends. It automatically handles P2P connectivity detection
+    when backend_type is set to 'auto'.
+    
+    Args:
+        backend_type: Type of backend ('nccl', 'native', 'p2p', 'auto')
+            - 'auto': Automatically selects best available backend (P2P if available, then NCCL)
+            - 'p2p': Force P2P backend (requires full P2P connectivity)
+            - 'nccl': Force NCCL backend (standard multi-GPU communication)
+            - 'native': Force native backend (CPU-mediated communication)
+        device: Current device ID (integer)
+        active_devices: List of active device IDs to use for tensor parallelism
+        output_device: Output device ID where results will be collected
+        init_method: Initialization method string (typically TCP endpoint)
+        master: Whether this is the master process (controls shared memory creation)
+        uuid: Unique identifier for shared memory allocation
+        shbuf_size: Shared buffer size in bytes (default: SHBUF_SIZE)
+        
+    Returns:
+        TPBackend: Initialized backend instance ready for tensor parallel operations
+        
+    Raises:
+        ValueError: If backend type is not supported or invalid
+        RuntimeError: If P2P connectivity check fails for P2P backend
+        RuntimeError: If backend initialization fails for any reason
+        
+    Example:
+        >>> # Automatic backend selection
+        >>> backend = create_tp_backend(
+        ...     backend_type="auto",
+        ...     device=0,
+        ...     active_devices=[0, 1, 2],
+        ...     output_device=0,
+        ...     init_method="tcp://127.0.0.1:29500",
+        ...     master=True,
+        ...     uuid="example-uuid"
+        ... )
+        >>> print(type(backend).__name__)
+        TPBackendP2P  # If P2P connectivity is available
+        
+        >>> # Explicit P2P backend
+        >>> backend = create_tp_backend(
+        ...     backend_type="p2p",
+        ...     device=0,
+        ...     active_devices=[0, 1],
+        ...     output_device=0,
+        ...     init_method="tcp://127.0.0.1:29500",
+        ...     master=True,
+        ...     uuid="example-uuid"
+        ... )
+        
+    Note:
+        - The 'auto' backend type performs automatic P2P connectivity detection
+        - P2P backend requires all GPUs to have bidirectional P2P access
+        - NCCL backend falls back to TPBackendNative for certain operations
+        - Native backend uses CPU-mediated communication between GPUs
+    """
+    if backend_type == "auto":
+        # Auto-detect best backend based on system capabilities
+        if device >= 0 and len(active_devices) > 1 and TPBackendP2P_AVAILABLE:
+            # Check P2P connectivity first
+            if check_p2p_connectivity(active_devices):
+                print(f" -- Auto-detected P2P connectivity, using TPBackendP2P")
+                return TPBackendP2P(
+                    device=device,
+                    active_devices=active_devices,
+                    output_device=output_device,
+                    init_method=init_method,
+                    master=master,
+                    uuid=uuid,
+                    shbuf_size=shbuf_size
+                )
+            else:
+                print(f" -- P2P connectivity not available, using TPBackendNCCL")
+                return TPBackendNCCL(
+                    device=device,
+                    active_devices=active_devices,
+                    output_device=output_device,
+                    init_method=init_method,
+                    master=master,
+                    uuid=uuid,
+                    shbuf_size=shbuf_size
+                )
+        else:
+            print(f" -- Using TPBackendNCCL (no P2P or single device)")
+            return TPBackendNCCL(
+                device=device,
+                active_devices=active_devices,
+                output_device=output_device,
+                init_method=init_method,
+                master=master,
+                uuid=uuid,
+                shbuf_size=shbuf_size
+            )
+    
+    elif backend_type == "p2p":
+        if not TPBackendP2P_AVAILABLE:
+            raise ValueError("TPBackendP2P is not available")
+        if device < 0:
+            raise ValueError("P2P backend requires GPU device")
+        if not check_p2p_connectivity(active_devices):
+            raise RuntimeError(
+                f"P2P backend requires full peer connectivity between all GPUs, "
+                f"but connectivity check failed for devices {active_devices}"
+            )
+        print(f" -- Using TPBackendP2P (explicit)")
+        return TPBackendP2P(
+            device=device,
+            active_devices=active_devices,
+            output_device=output_device,
+            init_method=init_method,
+            master=master,
+            uuid=uuid,
+            shbuf_size=shbuf_size
+        )
+    
+    elif backend_type == "nccl":
+        print(f" -- Using TPBackendNCCL (explicit)")
+        return TPBackendNCCL(
+            device=device,
+            active_devices=active_devices,
+            output_device=output_device,
+            init_method=init_method,
+            master=master,
+            uuid=uuid,
+            shbuf_size=shbuf_size
+        )
+    
+    elif backend_type == "native":
+        print(f" -- Using TPBackendNative (explicit)")
+        return TPBackendNative(
+            device=device,
+            active_devices=active_devices,
+            output_device=output_device,
+            init_method=init_method,
+            master=master,
+            uuid=uuid,
+            shbuf_size=shbuf_size
+        )
+    
+    else:
+        raise ValueError(f"Unsupported backend type: {backend_type}")
+
+
+def get_available_backends() -> list[str]:
+    """
+    Get list of available backend types.
+    
+    This function returns a list of backend types that are currently available
+    in the system. The list includes P2P backend if it's available,
+    and always includes standard backends like NCCL and native.
+    
+    Returns:
+        list[str]: List of available backend types, sorted with P2P first if available
+        
+    Example:
+        >>> backends = get_available_backends()
+        >>> print(backends)
+        ['p2p', 'nccl', 'native', 'auto']  # If P2P is available
+        >>> # or
+        ['nccl', 'native', 'auto']  # If P2P is not available
+        
+    Note:
+        - P2P backend is placed first in the list when available for auto-detection
+        - 'auto' is always included as it represents automatic backend selection
+        - The returned list can be used for UI options or configuration validation
+    """
+    backends = ["nccl", "native"]
+    if TPBackendP2P_AVAILABLE:
+        backends.insert(0, "p2p")  # P2P has priority for auto-detection
+    backends.append("auto")
+    return backends

@@ -3,7 +3,12 @@ import traceback
 from .model_tp_shared import SMProducer, SMConsumer
 from ..ext import exllamav3_ext as ext
 from functools import lru_cache
-from .model_tp_backend import TPBackendNCCL, TPBackendNative
+from .model_tp_backend import (
+    TPBackendNCCL,
+    TPBackendNative,
+    TPBackendP2P,
+    create_tp_backend
+)
 from ..util import log_tp, set_t0
 
 def init_pg(device: int, active_devices: list[int], output_device: int, backend_args: dict, master: bool = False):
@@ -23,28 +28,16 @@ def init_pg(device: int, active_devices: list[int], output_device: int, backend_
 
     torch.cuda.set_device(device)
 
-    match backend_args["type"]:
-        case "nccl":
-            backend = TPBackendNCCL(
-                device = device,
-                active_devices = active_devices,
-                output_device = output_device,
-                init_method = backend_args["init_method"],
-                master = master,
-                uuid = backend_args["uuid"],
-            )
-        case "native":
-            backend = TPBackendNative(
-                device = device,
-                active_devices = active_devices,
-                output_device = output_device,
-                init_method = backend_args["init_method"],  ##
-                master = master,
-                uuid = backend_args["uuid"],
-                cpu = device < 0
-            )
-        case _:
-            raise ValueError("Unknown backend type")
+    # Use factory function to create backend with automatic P2P detection
+    backend = create_tp_backend(
+        backend_type=backend_args["type"],
+        device=device,
+        active_devices=active_devices,
+        output_device=output_device,
+        init_method=backend_args["init_method"],
+        master=master,
+        uuid=backend_args["uuid"]
+    )
 
     local_context["backend"] = backend
     return local_context

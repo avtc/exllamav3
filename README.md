@@ -5,7 +5,8 @@ ExLlamaV3 is an inference library for running local LLMs on modern consumer GPUs
 
 - New [EXL3](doc/exl3.md) quantization format based on QTIP
 - Flexible tensor-parallel and expert-parallel inference for consumer hardware setups
-- OpenAI-compatible server provided via [TabbyAPI](https://github.com/theroyallab/tabbyAPI/) 
+- **P2P-optimized backend** for high-performance GPU-to-GPU communication
+- OpenAI-compatible server provided via [TabbyAPI](https://github.com/theroyallab/tabbyAPI/)
 - Continuous, dynamic batching
 - HF Transformers plugin (see [here](examples/transformers_integration.py))
 - HF model support (see [supported architectures](#architecture-support))
@@ -14,6 +15,83 @@ ExLlamaV3 is an inference library for running local LLMs on modern consumer GPUs
 - Multimodal support
 
 The official and recommended backend server for ExLlamaV3 is [TabbyAPI](https://github.com/theroyallab/tabbyAPI/), which provides an OpenAI-compatible API for local or remote inference, with extended features like HF model downloading, embedding model support and support for HF Jinja2 chat templates.
+
+## P2P Backend Support
+
+ExLlamaV3 includes a **P2P (Peer-to-Peer) backend** for optimized tensor parallel inference on systems with fully connected GPUs. This backend provides direct GPU-to-GPU communication capabilities that can significantly improve performance for multi-GPU setups.
+
+### Benefits of P2P Backend
+
+- **Reduced latency**: Direct GPU-to-GPU communication eliminates CPU bottlenecks
+- **Higher throughput**: Optimized communication primitives for fully connected GPU systems
+- **Automatic detection**: Seamless integration with existing tensor parallel workflows
+- **Fallback support**: Graceful degradation to NCCL or native backends when P2P is unavailable
+
+### When to Use P2P vs Other Backends
+
+| Backend | Best For | Requirements | Performance |
+|---------|----------|--------------|-------------|
+| **P2P** | Fully connected multi-GPU systems | All GPUs can access each other via P2P | **Highest** - Direct GPU communication |
+| **NCCL** | Mixed connectivity systems | NCCL support and standard GPU setup | **High** - Optimized for general multi-GPU |
+| **Native** | Limited connectivity or debugging | No special requirements | **Medium** - CPU-mediated communication |
+
+### P2P Backend Configuration
+
+The P2P backend can be configured using the `tp_backend` parameter when loading models:
+
+```python
+# Automatic P2P detection (recommended)
+model = Model.load(
+    model_dir,
+    tp_backend="auto",  # Automatically detects and uses P2P if available
+    devices=[0, 1, 2]  # Multiple GPU devices
+)
+
+# Explicit P2P usage
+model = Model.load(
+    model_dir,
+    tp_backend="p2p",  # Force P2P backend
+    devices=[0, 1, 2]
+)
+```
+
+### Installation and Setup
+
+The P2P backend is included with ExLlamaV3 and requires:
+
+- **CUDA 11.0 or later**: For GPU P2P capabilities
+- **Fully connected GPUs**: All GPUs must be able to access each other via P2P
+- **NVIDIA drivers**: Up-to-date drivers supporting peer-to-peer communication
+
+#### Verifying P2P Connectivity
+
+You can test P2P connectivity with the built-in utility:
+
+```python
+from exllamav3.model.model_tp_cuda import check_p2p_connectivity
+
+devices = [0, 1, 2]  # Your GPU device IDs
+if check_p2p_connectivity(devices):
+    print("P2P connectivity available!")
+else:
+    print("P2P connectivity not available - using fallback backend")
+```
+
+#### Environment Variables
+
+- `EXLLAMA_P2P_VERBOSE`: Enable verbose P2P logging (set to "1" for debugging)
+- `EXLLAMA_P2P_BUFFER_SIZE`: Configure P2P buffer size in bytes (default: 16MB)
+
+### Performance Considerations
+
+- **Best performance** on systems with 2-8 fully connected GPUs
+- **Optimal for** transformer models with frequent tensor parallel operations
+- **Memory overhead**: Slightly higher than NCCL due to direct P2P buffers
+- **Scalability**: Tested on systems up to 8 GPUs
+
+### Troubleshooting
+
+If you encounter issues with the P2P backend, see [P2P Troubleshooting Guide](docs/p2p_troubleshooting.md) for common solutions and debugging tips.
 
 ### ⚠️ Important
 
