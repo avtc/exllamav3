@@ -91,14 +91,8 @@ class P2PTopology:
                         test_src = torch.zeros(16, dtype=torch.float32, device=device_i)
                         test_dst = torch.zeros(16, dtype=torch.float32, device=device_j)
                         
-                        # Try to enable peer access
-                        try:
-                            torch.cuda.device_enable_peer_access(device_j)
-                        except RuntimeError as e:
-                            if "peer access already enabled" not in str(e):
-                                # Peer access cannot be enabled
-                                log_tp(device_i, f"P2P: Cannot enable peer access to device {device_j}")
-                                continue
+                        # Skip explicit peer access enabling - test copy directly
+                        # PyTorch handles P2P internally when copying between devices
                         
                         # Test actual P2P copy
                         try:

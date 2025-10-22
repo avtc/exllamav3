@@ -50,6 +50,7 @@ struct P2PDirectMemoryPool {
     };
     
     std::vector<RegisteredRegion> registered_regions;
+    std::vector<int> target_peers;  // Track which peers we're targeting for deadlock detection
     std::mutex pool_mutex;
 };
 
@@ -381,6 +382,7 @@ void p2p_cleanup_direct_memory_pool(
     pool.used_size = 0;
     pool.initialized = false;
     pool.registered_regions.clear();
+    pool.target_peers.clear();
 }
 
 void* p2p_allocate_from_direct_pool(
@@ -613,7 +615,7 @@ size_t p2p_get_direct_pool_size(
     return pool.total_size;
 }
 
-// Centralized P2P access management
+// Centralized P2P access management with deadlock prevention
 void p2p_enable_all_peer_access(
     int device,
     std::vector<int> peer_devices,
@@ -639,7 +641,12 @@ void p2p_enable_all_peer_access(
     
     printf("DEBUG: Enabling P2P for device %d, peer_devices count: %zu\n", device, peer_devices.size());
     
-    // Enable P2P access for all specified peer devices
+    // Store target peers for deadlock detection
+    if (pool.target_peers.empty()) {
+        pool.target_peers.reserve(peer_devices.size());
+    }
+    
+    // Enable P2P access for all specified peer devices with deadlock prevention
     for (int peer_device : peer_devices) {
         if (peer_device < 0 || peer_device >= 64 || peer_device == device) {
             printf("DEBUG: Skipping peer device %d (invalid or same as device)\n", peer_device);
@@ -650,6 +657,31 @@ void p2p_enable_all_peer_access(
                device, peer_device, pool.peer_access_enabled[peer_device] ? "enabled" : "disabled");
         
         if (!pool.peer_access_enabled[peer_device]) {
+            // Check for potential circular dependency to prevent deadlock
+            // Avoid enabling A->B if B is also trying to enable A->B simultaneously
+            P2PDirectMemoryPool& peer_pool = g_direct_memory_pools[peer_device];
+            if (&peer_pool != &pool && peer_pool.initialized) {
+                bool peer_wants_this_device = false;
+                for (int pd : peer_pool.target_peers) {
+                    if (pd == device) {
+                        peer_wants_this_device = true;
+                        break;
+                    }
+                }
+                
+                if (peer_wants_this_device) {
+                    printf("WARNING: Detected potential circular dependency between device %d and %d. "
+                           "Skipping peer access enable to prevent deadlock.\n", device, peer_device);
+                    
+                    // Continue with other devices instead of failing completely
+                    pool.peer_access_enabled[peer_device] = false;
+                    continue;
+                }
+            }
+            
+            // Store this peer as a target for future deadlock detection
+            pool.target_peers.push_back(peer_device);
+            
             // Try to enable peer access
             cudaError_t result = cudaDeviceEnablePeerAccess(peer_device, 0);
             printf("DEBUG: cudaDeviceEnablePeerAccess(%d) result: %s\n",
@@ -659,14 +691,17 @@ void p2p_enable_all_peer_access(
                 pool.peer_access_enabled[peer_device] = true;
                 printf("SUCCESS: Enabled P2P access from device %d to %d\n", device, peer_device);
             } else {
-                // Log error but continue with other devices
+                // Log error but continue with other devices (don't fail the whole initialization)
                 printf("ERROR: Failed to enable P2P access from device %d to %d: %s\n",
                        device, peer_device, cudaGetErrorString(result));
                 
-                // Set abort flag on critical failure
-                if (abort_flag.defined()) {
-                    uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
-                    *abort_flag_ptr = 1;
+                // Only set abort flag on critical failures (like allocation errors)
+                // Don't set abort for P2P access failures as they can happen and system can continue
+                if (result == cudaErrorOutOfMemory || result == cudaErrorInvalidValue) {
+                    if (abort_flag.defined()) {
+                        uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
+                        *abort_flag_ptr = 1;
+                    }
                 }
             }
         } else {

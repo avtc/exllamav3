@@ -148,17 +148,51 @@ class TPBackendP2P:
                 peer_devices = [d for d in self.active_devices if d != self.device]
                 # Adjust pool size based on number of peers
                 peer_pool_size = max(pool_size // len(peer_devices), min_pool_size // 2) if peer_devices else pool_size
-                ext.p2p_init_direct_memory_pool(self.device, peer_pool_size, peer_devices, self.abort_flag)
-                log_tp(self.device, f"P2P direct memory pool initialized: {peer_pool_size // 1024**2}MB with {len(peer_devices)} peers")
                 
-                # Enable peer access for all available peers
-                for peer_device in peer_devices:
-                    if self.p2p_topology.can_access_peer(self.device, peer_device):
-                        try:
-                            ext.p2p_enable_peer_access(self.device, peer_device, self.abort_flag)
-                            log_tp(self.device, f"P2P peer access enabled: {peer_device}")
-                        except Exception as e:
-                            log_tp(self.device, f"P2P peer access failed for {peer_device}: {e}")
+                try:
+                    ext.p2p_init_direct_memory_pool(self.device, peer_pool_size, peer_devices, self.abort_flag)
+                    log_tp(self.device, f"P2P direct memory pool initialized: {peer_pool_size // 1024**2}MB with {len(peer_devices)} peers")
+                    
+                    # Enable peer access for all available peers with timeout protection
+                    successful_enables = 0
+                    for peer_device in peer_devices:
+                        if self.p2p_topology.can_access_peer(self.device, peer_device):
+                            try:
+                                # Set timeout for peer access enable to prevent hanging
+                                import signal
+                                
+                                def timeout_handler(signum, frame):
+                                    raise TimeoutError(f"P2P peer access enable timed out for device {peer_device}")
+                                
+                                # Set timeout (only works on Unix-like systems, but provides some protection)
+                                old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+                                signal.alarm(10)  # 10 second timeout
+                                
+                                try:
+                                    ext.p2p_enable_peer_access(self.device, peer_device, self.abort_flag)
+                                    log_tp(self.device, f"P2P peer access enabled: {peer_device}")
+                                    successful_enables += 1
+                                finally:
+                                    signal.alarm(0)  # Cancel the alarm
+                                    signal.signal(signal.SIGALRM, old_handler)  # Restore old handler
+                                    
+                            except TimeoutError as te:
+                                log_tp(self.device, f"P2P peer access enable timed out for {peer_device}: {te}")
+                            except Exception as e:
+                                log_tp(self.device, f"P2P peer access failed for {peer_device}: {e}")
+                    
+                    log_tp(self.device, f"P2P peer access enabled for {successful_enables}/{len(peer_devices)} peers")
+                    
+                    # If no peer access could be established, fallback to non-P2P mode
+                    if successful_enables == 0 and len(peer_devices) > 0:
+                        log_tp(self.device, "WARNING: No P2P peer access established, falling back to non-P2P mode")
+                        self.use_p2p = False
+                        
+                except Exception as e:
+                    log_tp(self.device, f"P2P direct memory pool initialization failed: {e}")
+                    # Continue with basic P2P even if direct pool fails
+                    log_tp(self.device, "Continuing with basic P2P functionality")
+                    
         except Exception as e:
             log_tp(self.device, f"P2P memory pool initialization failed: {e}")
             self.use_p2p = False
