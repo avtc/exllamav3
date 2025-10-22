@@ -46,7 +46,6 @@ class TPBackendP2P:
         master: bool,
         uuid: str,
         shbuf_size: int = SHBUF_SIZE,
-        auto_fallback: bool = True,
     ):
         self.device = device
         if device < 0:
@@ -69,8 +68,6 @@ class TPBackendP2P:
         log_tp(device, f"P2P init: world_size {self.world_size}, rank {self.rank}, device {device}")
         print(f" -- P2P init: world_size {self.world_size}, rank {self.rank}, device {device}")
         
-        self.auto_fallback = auto_fallback
-        
         # Initialize shared memory for P2P operations (without fallback)
         self._init_shared_memory()
         
@@ -89,6 +86,13 @@ class TPBackendP2P:
                 self.use_p2p = True
                 # Initialize P2P memory pool
                 self._init_p2p_memory_pool()
+                
+                # Enable P2P access for all peer devices
+                if self.p2p_topology:
+                    peer_devices = [d for d in self.active_devices if d != self.device]
+                    log_tp(self.device, f"About to enable P2P access for {len(peer_devices)} peer devices")
+                    ext.p2p_enable_all_peer_access(self.device, peer_devices, self.abort_flag)
+                    log_tp(self.device, f"P2P access enabled for all peer devices")
             except Exception as e:
                 log_tp(device, f"P2P backend initialization failed: {e}")
                 raise RuntimeError(f"P2P backend initialization failed for device {device}: {e}")
@@ -99,6 +103,12 @@ class TPBackendP2P:
             self.use_p2p = True
             # Initialize P2P memory pool
             self._init_p2p_memory_pool()
+            
+            # Enable P2P access for all peer devices
+            peer_devices = [d for d in self.active_devices if d != self.device]
+            log_tp(self.device, f"About to enable P2P access for {len(peer_devices)} peer devices")
+            ext.p2p_enable_all_peer_access(self.device, peer_devices, self.abort_flag)
+            log_tp(self.device, f"P2P access enabled for all peer devices")
         
         # P2P backend operates without fallback - P2P operations must work or fail explicitly
         self.fallback = None
@@ -120,103 +130,115 @@ class TPBackendP2P:
                 self.monitor.set_topology(self.p2p_topology)
                 
     def _init_shared_memory(self):
-        """Initialize shared memory for P2P operations without fallback."""
+        """Initialize shared memory for P2P operations - identical to TPBackendNative."""
         if self.device < 0:
             return
             
-        try:
-            # Create shared memory structures similar to TPBackendNative but simplified
-            import multiprocessing.shared_memory as shm
-            
-            # Shared memory names
-            shm_g_name = self.uuid + "_g"
-            shm_b_name = self.uuid + "_b"
-            shm_r_name = self.uuid + "_r"
-            shm_s_name = self.uuid + "_s"
-            
-            # Sizes
-            GLOBALS_SIZE = 128*1024
-            SHBUF_SIZE_R = 17 * 128 * 1024
-            SHBUF_SIZE_S = 16 * 1024
-            
-            if self.rank == 0:  # Master process creates shared memory
-                self.shm_g = shm.SharedMemory(create=True, size=GLOBALS_SIZE, name=shm_g_name)
-                self.shm_b = shm.SharedMemory(create=True, size=self.shbuf_size, name=shm_b_name)
-                self.shm_r = shm.SharedMemory(create=True, size=SHBUF_SIZE_R, name=shm_r_name)
-                self.shm_s = shm.SharedMemory(create=True, size=SHBUF_SIZE_S, name=shm_s_name)
-                
-                # Initialize buffers
-                import numpy as np
-                self.buf_g = np.ndarray((GLOBALS_SIZE,), dtype=np.uint8, buffer=self.shm_g.buf)
-                self.buf_b = np.ndarray((self.shbuf_size,), dtype=np.uint8, buffer=self.shm_b.buf)
-                self.buf_r = np.ndarray((SHBUF_SIZE_R,), dtype=np.uint8, buffer=self.shm_r.buf)
-                self.buf_s = np.ndarray((SHBUF_SIZE_S,), dtype=np.uint8, buffer=self.shm_s.buf)
-                
-                self.buf_g[:] = 0
-                self.buf_b[: self.shbuf_size: 4096] = 0
-                self.buf_r[:] = 0
-                self.buf_s[:] = 0
-            else:
-                # Non-master processes wait for shared memory to appear
-                import time
-                deadline = time.time() + 15
-                
-                self.shm_g = None
-                self.shm_b = None
-                self.shm_r = None
-                self.shm_s = None
-                
-                while True:
-                    try:
-                        if self.shm_g is None:
-                            self.shm_g = shm.SharedMemory(name=shm_g_name)
-                        if self.shm_b is None:
-                            self.shm_b = shm.SharedMemory(name=shm_b_name)
-                        if self.shm_r is None:
-                            self.shm_r = shm.SharedMemory(name=shm_r_name)
-                        if self.shm_s is None:
-                            self.shm_s = shm.SharedMemory(name=shm_s_name)
-                        break
-                    except FileNotFoundError:
-                        if time.time() > deadline:
-                            raise TimeoutError("Timeout waiting for shared memory")
-                        time.sleep(0.05)
-                
-                import numpy as np
-                self.buf_g = np.ndarray((GLOBALS_SIZE,), dtype=np.uint8, buffer=self.shm_g.buf)
-                self.buf_b = np.ndarray((self.shbuf_size,), dtype=np.uint8, buffer=self.shm_b.buf)
-                self.buf_r = np.ndarray((SHBUF_SIZE_R,), dtype=np.uint8, buffer=self.shm_r.buf)
-                self.buf_s = np.ndarray((SHBUF_SIZE_S,), dtype=np.uint8, buffer=self.shm_s.buf)
-            
-            # Create tensors from shared memory
-            self.tensor_g = torch.as_tensor(self.buf_g)
-            self.tensor_b = torch.as_tensor(self.buf_b)
-            self.tensor_r = torch.as_tensor(self.buf_r)
-            self.tensor_s = torch.as_tensor(self.buf_s)
-            
-            # Get pointers for CUDA operations
-            self.ptr_g = self.tensor_g.data_ptr()
-            self.ptr_b = self.tensor_b.data_ptr()
-            self.ptr_r = self.tensor_r.data_ptr()
-            self.ptr_s = self.tensor_s.data_ptr()
-            
-            # Register host memory for CUDA access
-            from .model_tp_cuda import cuda_host_register, CUDA_HOST_REGISTER_PORTABLE
+        # Use exact same implementation as TPBackendNative
+        self.uuid = self.uuid
+        self.shm_g_name = self.uuid + "_g"
+        self.shm_b_name = self.uuid + "_b"
+        self.shm_r_name = self.uuid + "_r"
+        self.shm_s_name = self.uuid + "_s"
+        self.max_num_devices = max(self.active_devices) + 1
+        self.master = (self.rank == 0)
+        self.cpu = False
+        self.cpu_is_pinned = False
+
+        size_g = GLOBALS_SIZE
+        size_b = self.shbuf_size
+        size_r = SHBUF_SIZE_R
+        size_s = SHBUF_SIZE_S
+
+        if self.master:
+            log_tp(self.device, f"Creating SHMs")
+            self.shm_g = shared_memory.SharedMemory(create=True, size=size_g, name=self.shm_g_name)
+            log_tp(self.device, f"Created SHM: {self.shm_g_name}, {size_g} bytes")
+            self.shm_b = shared_memory.SharedMemory(create=True, size=size_b, name=self.shm_b_name)
+            log_tp(self.device, f"Created SHM: {self.shm_b_name}, {size_b} bytes")
+            self.shm_r = shared_memory.SharedMemory(create=True, size=size_r, name=self.shm_r_name)
+            log_tp(self.device, f"Created SHM: {self.shm_r_name}, {size_r} bytes")
+            self.shm_s = shared_memory.SharedMemory(create=True, size=size_s, name=self.shm_s_name)
+            log_tp(self.device, f"Created SHM: {self.shm_s_name}, {size_s} bytes")
+            self.buf_g = np.ndarray((size_g,), dtype=np.uint8, buffer=self.shm_g.buf)
+            self.buf_b = np.ndarray((size_b,), dtype=np.uint8, buffer=self.shm_b.buf)
+            self.buf_r = np.ndarray((size_r,), dtype=np.uint8, buffer=self.shm_r.buf)
+            self.buf_s = np.ndarray((size_s,), dtype=np.uint8, buffer=self.shm_s.buf)
+            self.buf_g[:] = 0
+            self.buf_b[: size_b: 4096] = 0
+            self.buf_r[:] = 0
+            self.buf_s[:] = 0
+        else:
+            self.shm_g = None
+            self.shm_b = None
+            self.shm_r = None
+            self.shm_s = None
+            deadline = time.time() + 15
+            log_tp(self.device, f"Opening SHMs")
+            first_fnf = True
+            while True:
+                try:
+                    if self.shm_g is None:
+                        self.shm_g = shared_memory.SharedMemory(name=self.shm_g_name)
+                        log_tp(self.device, f"Opened SHM {self.shm_g_name}")
+                    if self.shm_b is None:
+                        self.shm_b = shared_memory.SharedMemory(name=self.shm_b_name)
+                        log_tp(self.device, f"Opened SHM {self.shm_b_name}")
+                    if self.shm_r is None:
+                        self.shm_r = shared_memory.SharedMemory(name=self.shm_r_name)
+                        log_tp(self.device, f"Opened SHM {self.shm_r_name}")
+                    if self.shm_s is None:
+                        self.shm_s = shared_memory.SharedMemory(name=self.shm_s_name)
+                        log_tp(self.device, f"Opened SHM {self.shm_s_name}")
+                    break
+                except FileNotFoundError:
+                    if first_fnf:
+                        log_tp(self.device, f"Waiting for SHM to appear")
+                        first_fnf = False
+                    if time.time() > deadline:
+                        log_tp(self.device, f"Timeout opening SHM")
+                        raise TimeoutError("Timeout waiting for master process to create SHM")
+                    time.sleep(0.05)
+
+        # Create local tensors/flags
+        if self.device >= 0:
+            self.abort_flag = torch.zeros((1,), device=self.device, dtype=torch.int)
+        else:
+            self.abort_flag = None
+
+        # Create pinned, shared tensors
+        def get_local_tensor(shm_buf, _buffer_size):
+            np_view = np.ndarray(
+                shape=(_buffer_size,),
+                dtype=np.uint8,
+                buffer=shm_buf,
+                offset=0,
+            )
+            return torch.as_tensor(np_view)
+        self.tensor_g = get_local_tensor(self.shm_g.buf, size_g)
+        self.tensor_b = get_local_tensor(self.shm_b.buf, size_b)
+        self.tensor_r = get_local_tensor(self.shm_r.buf, size_r)
+        self.tensor_s = get_local_tensor(self.shm_s.buf, size_s)
+        self.ptr_g = self.tensor_g.data_ptr()
+        self.ptr_b = self.tensor_b.data_ptr()
+        self.ptr_r = self.tensor_r.data_ptr()
+        self.ptr_s = self.tensor_s.data_ptr()
+        if not self.cpu:
+            log_tp(self.device, f"Host register G")
             cuda_host_register(self.ptr_g, self.tensor_g.numel(), flags=CUDA_HOST_REGISTER_PORTABLE)
+            log_tp(self.device, f"Host register B")
             cuda_host_register(self.ptr_b, self.tensor_b.numel(), flags=CUDA_HOST_REGISTER_PORTABLE)
+            log_tp(self.device, f"Host register R")
             cuda_host_register(self.ptr_r, self.tensor_r.numel(), flags=CUDA_HOST_REGISTER_PORTABLE)
+            log_tp(self.device, f"Host register S")
             cuda_host_register(self.ptr_s, self.tensor_s.numel(), flags=CUDA_HOST_REGISTER_PORTABLE)
+
+        # Init global context
+        if self.master:
+            log_tp(self.device, f"Initializing global context")
+            ext.pg_init_context(self.ptr_g)
             
-            # Initialize global context
-            if self.rank == 0:
-                import exllamav3_ext as ext
-                ext.pg_init_context(self.ptr_g)
-                
-            log_tp(self.device, f"P2P shared memory initialized for device {self.device}")
-            
-        except Exception as e:
-            log_tp(self.device, f"P2P shared memory initialization failed: {e}")
-            raise RuntimeError(f"Failed to initialize P2P shared memory for device {self.device}: {e}")
+        log_tp(self.device, f"P2P shared memory initialized for device {self.device}")
     def _init_p2p_memory_pool(self):
         """Initialize P2P memory pool for this device with adaptive sizing."""
         if self.device < 0 or not self.use_p2p:
@@ -224,7 +246,6 @@ class TPBackendP2P:
             
         try:
             # Adaptive pool sizing based on available memory and device count
-            import torch
             total_memory = torch.cuda.get_device_properties(self.device).total_memory
             available_memory = total_memory - torch.cuda.memory_allocated(self.device)
             
@@ -247,45 +268,7 @@ class TPBackendP2P:
                     log_tp(self.device, f"About to call p2p_init_direct_memory_pool for device {self.device}")
                     ext.p2p_init_direct_memory_pool(self.device, peer_pool_size, peer_devices, self.abort_flag)
                     log_tp(self.device, f"P2P direct memory pool initialized: {peer_pool_size // 1024**2}MB with {len(peer_devices)} peers")
-                    
-                    # Enable peer access for all available peers with timeout protection
-                    successful_enables = 0
-                    for peer_device in peer_devices:
-                        if self.p2p_topology.can_access_peer(self.device, peer_device):
-                            log_tp(self.device, f"DEBUG: About to enable peer access to device {peer_device}")
-                            try:
-                                # Set timeout for peer access enable to prevent hanging
-                                import signal
-                                
-                                def timeout_handler(signum, frame):
-                                    raise TimeoutError(f"P2P peer access enable timed out for device {peer_device}")
-                                
-                                # Set timeout (only works on Unix-like systems, but provides some protection)
-                                old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-                                signal.alarm(10)  # 10 second timeout
-                                
-                                try:
-                                    log_tp(self.device, f"DEBUG: Calling ext.p2p_enable_peer_access for device {peer_device}")
-                                    ext.p2p_enable_peer_access(self.device, peer_device, self.abort_flag)
-                                    log_tp(self.device, f"P2P peer access enabled: {peer_device}")
-                                    successful_enables += 1
-                                finally:
-                                    signal.alarm(0)  # Cancel the alarm
-                                    signal.signal(signal.SIGALRM, old_handler)  # Restore old handler
-                                    
-                            except TimeoutError as te:
-                                log_tp(self.device, f"P2P peer access enable timed out for {peer_device}: {te}")
-                            except Exception as e:
-                                log_tp(self.device, f"DEBUG: Exception in peer access enable for {peer_device}: {e}")
-                                log_tp(self.device, f"P2P peer access failed for {peer_device}: {e}")
-                    
-                    log_tp(self.device, f"P2P peer access enabled for {successful_enables}/{len(peer_devices)} peers")
-                    
-                    # If no peer access could be established, fallback to non-P2P mode
-                    if successful_enables == 0 and len(peer_devices) > 0:
-                        log_tp(self.device, "WARNING: No P2P peer access established, falling back to non-P2P mode")
-                        self.use_p2p = False
-                        
+                         
                 except Exception as e:
                     log_tp(self.device, f"P2P direct memory pool initialization failed: {e}")
                     # Continue with basic P2P even if direct pool fails
@@ -303,7 +286,6 @@ class TPBackendP2P:
         # Cleanup P2P memory pool
         if self.use_p2p:
             try:
-                import exllamav3_ext as ext
                 ext.p2p_cleanup_memory_pool(self.device, self.abort_flag)
                 ext.p2p_cleanup_direct_memory_pool(self.device, self.abort_flag)
                 log_tp(self.device, "P2P memory pool cleaned up")
@@ -842,38 +824,6 @@ class TPBackendP2P:
         except Exception as e:
             log_tp(self.device, f"P2P memory pool stats failed: {e}")
             return {}
-
-    def enable_peer_access(self, peer_device: int):
-        """Enable P2P access to a peer device."""
-        import traceback
-        log_tp(self.device, f"DEBUG: enable_peer_access() called for device {peer_device}")
-        log_tp(self.device, f"DEBUG: Call stack: {traceback.format_stack()}")
-        
-        if not self.use_p2p:
-            return False
-        
-        try:
-            log_tp(self.device, f"DEBUG: About to call ext.p2p_enable_peer_access for device {peer_device}")
-            ext.p2p_enable_peer_access(self.device, peer_device, self.abort_flag)
-            log_tp(self.device, f"P2P peer access enabled: {peer_device}")
-            return True
-        except Exception as e:
-            log_tp(self.device, f"DEBUG: Exception in enable_peer_access for {peer_device}: {e}")
-            log_tp(self.device, f"P2P peer access enable failed: {e}")
-            return False
-
-    def disable_peer_access(self, peer_device: int):
-        """Disable P2P access to a peer device."""
-        if not self.use_p2p:
-            return False
-        
-        try:
-            ext.p2p_disable_peer_access(self.device, peer_device, self.abort_flag)
-            log_tp(self.device, f"P2P peer access disabled: {peer_device}")
-            return True
-        except Exception as e:
-            log_tp(self.device, f"P2P peer access disable failed: {e}")
-            return False
 
     def is_peer_access_enabled(self, peer_device: int):
         """Check if P2P access to a peer device is enabled."""

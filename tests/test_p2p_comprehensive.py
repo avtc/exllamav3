@@ -251,20 +251,10 @@ class TestP2PBackend(unittest.TestCase):
     
     def test_peer_access_management(self):
         """Test peer access management."""
-        if hasattr(self.backend_0, 'enable_peer_access'):
-            # Test enabling peer access
-            result = self.backend_0.enable_peer_access(1)
-            self.assertIsInstance(result, bool)
-            
-            # Test checking peer access
-            if hasattr(self.backend_0, 'is_peer_access_enabled'):
-                is_enabled = self.backend_0.is_peer_access_enabled(1)
-                self.assertIsInstance(is_enabled, bool)
-            
-            # Test disabling peer access
-            if hasattr(self.backend_0, 'disable_peer_access'):
-                result = self.backend_0.disable_peer_access(1)
-                self.assertIsInstance(result, bool)
+        # Test checking peer access
+        if hasattr(self.backend_0, 'is_peer_access_enabled'):
+            is_enabled = self.backend_0.is_peer_access_enabled(1)
+            self.assertIsInstance(is_enabled, bool)
     
     def test_bandwidth_measurement(self):
         """Test bandwidth measurement."""

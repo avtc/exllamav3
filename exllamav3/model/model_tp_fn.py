@@ -71,18 +71,8 @@ def init_pg(device: int, active_devices: list[int], output_device: int, backend_
                             master = master,
                             uuid = backend_args["uuid"],
                         )
-                    elif topology_summary["connectivity_ratio"] > 0.5:
-                        log_tp(device, "Auto-selecting P2P backend (partial connectivity)")
-                        backend = TPBackendP2P(
-                            device = device,
-                            active_devices = active_devices,
-                            output_device = output_device,
-                            init_method = backend_args["init_method"],
-                            master = master,
-                            uuid = backend_args["uuid"],
-                        )
                     else:
-                        log_tp(device, "Auto-selecting NCCL backend (low P2P connectivity)")
+                        log_tp(device, f"Auto-selecting NCCL backend (not fully connected, connectivity: {topology_summary['connectivity_ratio']:.2f})")
                         backend = TPBackendNCCL(
                             device = device,
                             active_devices = active_devices,
