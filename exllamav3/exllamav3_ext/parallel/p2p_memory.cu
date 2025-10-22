@@ -303,6 +303,7 @@ void p2p_init_direct_memory_pool(
     const at::cuda::OptionalCUDAGuard device_guard(device);
     
     if (device < 0 || device >= 64) {
+        printf("DEBUG: Invalid device %d for direct memory pool initialization\n", device);
         return;
     }
     
@@ -311,13 +312,18 @@ void p2p_init_direct_memory_pool(
     std::lock_guard<std::mutex> lock(pool.pool_mutex);
     
     if (pool.initialized) {
+        printf("DEBUG: Direct memory pool for device %d already initialized\n", device);
         return; // Already initialized
     }
+    
+    printf("DEBUG: Initializing direct memory pool for device %d, size: %zu bytes\n", device, pool_size);
     
     // Allocate memory pool on the device
     void* base_ptr;
     cudaError_t result = cudaMalloc(&base_ptr, pool_size);
     if (result != cudaSuccess) {
+        printf("ERROR: Failed to allocate %zu bytes for device %d: %s\n",
+               pool_size, device, cudaGetErrorString(result));
         uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
         *abort_flag_ptr = 1;
         return;
@@ -332,6 +338,8 @@ void p2p_init_direct_memory_pool(
     for (int i = 0; i < 64; i++) {
         pool.peer_access_enabled[i] = false;
     }
+    
+    printf("DEBUG: Memory pool allocated successfully for device %d\n", device);
     
     // Enable P2P access for all peer devices during initialization
     p2p_enable_all_peer_access(device, peer_devices, abort_flag);
@@ -615,30 +623,56 @@ void p2p_enable_all_peer_access(
     const at::cuda::OptionalCUDAGuard device_guard(device);
     
     if (device < 0 || device >= 64) {
+        printf("DEBUG: Device %d out of range (max 64)\n", device);
         return;
     }
     
     P2PDirectMemoryPool& pool = g_direct_memory_pools[device];
     
+    // Check if pool is initialized
+    if (!pool.initialized) {
+        printf("DEBUG: Pool for device %d not initialized\n", device);
+        return;
+    }
+    
     std::lock_guard<std::mutex> lock(pool.pool_mutex);
+    
+    printf("DEBUG: Enabling P2P for device %d, peer_devices count: %zu\n", device, peer_devices.size());
     
     // Enable P2P access for all specified peer devices
     for (int peer_device : peer_devices) {
         if (peer_device < 0 || peer_device >= 64 || peer_device == device) {
+            printf("DEBUG: Skipping peer device %d (invalid or same as device)\n", peer_device);
             continue;
         }
+        
+        printf("DEBUG: Attempting to enable P2P from device %d to peer %d (current state: %s)\n",
+               device, peer_device, pool.peer_access_enabled[peer_device] ? "enabled" : "disabled");
         
         if (!pool.peer_access_enabled[peer_device]) {
             // Try to enable peer access
             cudaError_t result = cudaDeviceEnablePeerAccess(peer_device, 0);
+            printf("DEBUG: cudaDeviceEnablePeerAccess(%d) result: %s\n",
+                   peer_device, cudaGetErrorString(result));
+            
             if (result == cudaSuccess || result == cudaErrorPeerAccessAlreadyEnabled) {
                 pool.peer_access_enabled[peer_device] = true;
-                printf("Successfully enabled P2P access from device %d to %d\n", device, peer_device);
+                printf("SUCCESS: Enabled P2P access from device %d to %d\n", device, peer_device);
             } else {
                 // Log error but continue with other devices
-                printf("Failed to enable P2P access from device %d to %d: %s\n",
+                printf("ERROR: Failed to enable P2P access from device %d to %d: %s\n",
                        device, peer_device, cudaGetErrorString(result));
+                
+                // Set abort flag on critical failure
+                if (abort_flag.defined()) {
+                    uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
+                    *abort_flag_ptr = 1;
+                }
             }
+        } else {
+            printf("DEBUG: P2P already enabled from device %d to %d\n", device, peer_device);
         }
     }
+    
+    printf("DEBUG: P2P enable completed for device %d\n", device);
 }
