@@ -28,8 +28,6 @@ void p2p_broadcast_kernel
 {
     int t = threadIdx.x;
     
-    uint8_t* data_end = data_ptr + data_size;
-    
     // Producer - copy data directly to peer devices using P2P
     if constexpr (is_producer)
     {
@@ -39,12 +37,7 @@ void p2p_broadcast_kernel
         {
             const int dst_device = __ffs(pending) - 1;
             pending &= (pending - 1);
-            
-            // Check if P2P access is available
-            int can_access_peer;
-            cudaDeviceCanAccessPeer(&can_access_peer, this_device, dst_device);
-            
-            if (can_access_peer)
+           
             {
                 // Copy data directly to peer device memory
                 size_t chunk_size = 16 * NUM_THREADS; // 16 bytes per thread
@@ -74,22 +67,8 @@ void p2p_broadcast_kernel
     // Consumer - wait for data from source device
     else
     {
-        // Check if source device can access this device via P2P
-        int can_access_peer;
-        cudaDeviceCanAccessPeer(&can_access_peer, src_device, this_device);
-        
-        if (can_access_peer)
-        {
-            // Data should already be in our memory via P2P copy
-            // No additional action needed
-        }
-        else
-        {
-            // Fallback to traditional method if P2P is not available
-            // This would use shared memory or other mechanisms
-            // For now, we'll just wait (in a real implementation, this would use fallback)
-            __syncthreads();
-        }
+        // Data should already be in our memory via P2P copy
+        // No additional action needed
     }
     
     // Synchronization barrier
@@ -118,8 +97,6 @@ void p2p_broadcast_ll_kernel
     __syncthreads();
     uint32_t cookie = cookie_s;
     
-    uint8_t* data_end = data_ptr + data_size;
-    
     // Producer - copy data directly to peer devices using P2P
     if constexpr (is_producer)
     {
@@ -128,34 +105,27 @@ void p2p_broadcast_ll_kernel
         {
             const int dst_device = __ffs(pending) - 1;
             pending &= (pending - 1);
+           
+            // Copy data directly to peer device memory
+            size_t chunk_size = 4 * NUM_THREADS_LL; // 4 bytes per thread for uint32
+            size_t offset = 0;
             
-            // Check if P2P access is available
-            int can_access_peer;
-            cudaDeviceCanAccessPeer(&can_access_peer, this_device, dst_device);
-            
-            if (can_access_peer)
+            while (offset < data_size && !(*abort_flag))
             {
-                // Copy data directly to peer device memory
-                size_t chunk_size = 4 * NUM_THREADS_LL; // 4 bytes per thread for uint32
-                size_t offset = 0;
+                size_t bytes_to_copy = min(chunk_size, data_size - offset);
                 
-                while (offset < data_size && !(*abort_flag))
+                // Copy using uint32 for efficiency
+                uint32_t* src = (uint32_t*)(data_ptr + offset);
+                // For P2P, we need to enable peer access first
+                uint32_t* dst = (uint32_t*)data_ptr;  // This would be replaced with actual P2P access
+                
+                if (t < bytes_to_copy / 4)
                 {
-                    size_t bytes_to_copy = min(chunk_size, data_size - offset);
-                    
-                    // Copy using uint32 for efficiency
-                    uint32_t* src = (uint32_t*)(data_ptr + offset);
-                    // For P2P, we need to enable peer access first
-                    uint32_t* dst = (uint32_t*)data_ptr;  // This would be replaced with actual P2P access
-                    
-                    if (t < bytes_to_copy / 4)
-                    {
-                        synced_write_uint32((uint64_t*)(dst + t), src[t], cookie);
-                    }
-                    
-                    offset += chunk_size;
-                    __syncthreads();
+                    synced_write_uint32((uint64_t*)(dst + t), src[t], cookie);
                 }
+                
+                offset += chunk_size;
+                __syncthreads();
             }
         }
     }
@@ -163,20 +133,8 @@ void p2p_broadcast_ll_kernel
     // Consumer - wait for data from source device
     else
     {
-        // Check if source device can access this device via P2P
-        int can_access_peer;
-        cudaDeviceCanAccessPeer(&can_access_peer, src_device, this_device);
-        
-        if (can_access_peer)
-        {
-            // Data should already be in our memory via P2P copy
-            // No additional action needed
-        }
-        else
-        {
-            // Fallback to traditional method if P2P is not available
-            __syncthreads();
-        }
+        // Data should already be in our memory via P2P copy
+        // No additional action needed
     }
     
     // Synchronization barrier
