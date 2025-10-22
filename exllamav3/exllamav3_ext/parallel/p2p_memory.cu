@@ -648,9 +648,7 @@ void p2p_enable_all_peer_access(
         return;
     }
     
-    printf("DEBUG: About to acquire mutex lock for device %d\n", device);
-    std::lock_guard<std::mutex> lock(pool.pool_mutex);
-    printf("DEBUG: Mutex lock acquired for device %d\n", device);
+    printf("DEBUG: Skipping mutex lock (already held by caller) for device %d\n", device);
     
     printf("DEBUG: Enabling P2P for device %d, peer_devices count: %zu\n", device, peer_devices.size());
     printf("DEBUG: About to iterate through peer devices\n");
