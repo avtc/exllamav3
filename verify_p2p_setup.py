@@ -46,15 +46,7 @@ def test_p2p_setup():
     # Test direct CUDA P2P without custom backend
     print(f"\n=== Direct CUDA P2P Test ===")
     try:
-        torch.cuda.set_device(src_device)
-        torch.cuda.enable_peer_access(dst_device)
-        print(f"Enabled P2P access from {src_device} to {dst_device}")
-        
-        torch.cuda.set_device(dst_device)
-        torch.cuda.enable_peer_access(src_device)
-        print(f"Enabled P2P access from {dst_device} to {src_device}")
-        
-        # Test a simple transfer
+        # Test a simple transfer using PyTorch's built-in P2P
         test_tensor = torch.randn(1000, dtype=torch.float32, device=src_device)
         dst_tensor = torch.zeros(1000, dtype=torch.float32, device=dst_device)
         
