@@ -50,7 +50,7 @@ void p2p_tree_reduce_up(
 
 void p2p_tree_reduce_down(
     uintptr_t ctx,
-    std::vector<uintuintptr_t> devices,
+    std::vector<uintptr_t> devices,
     int this_device,
     int master_device,
     at::Tensor& tensor,

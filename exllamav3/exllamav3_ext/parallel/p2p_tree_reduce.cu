@@ -210,7 +210,7 @@ void p2p_build_kary_tree(
 
 // Build balanced tree structure
 void p2p_build_balanced_tree(
-    std::vector<uintuintptr_t> devices,
+    std::vector<uintptr_t> devices,
     int this_device,
     std::vector<int>& parent,
     std::vector<std::vector<int>>& children

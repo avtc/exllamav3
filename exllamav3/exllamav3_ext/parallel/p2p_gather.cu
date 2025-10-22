@@ -196,7 +196,7 @@ void p2p_gather
 void p2p_gather_direct
 (
     uintptr_t ctx,
-    std::vector<uintuintptr_t> devices,
+    std::vector<uintptr_t> devices,
     int this_device,
     int out_device,
     at::Tensor& tensor,
