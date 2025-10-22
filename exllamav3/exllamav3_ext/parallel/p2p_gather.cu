@@ -84,37 +84,26 @@ void p2p_gather_kernel
             }
             else
             {
-                // Check if we can access the source device via P2P
-                int can_access_peer;
-                cudaDeviceCanAccessPeer(&can_access_peer, this_device, src_device);
+                // Direct P2P access to source device memory
+                // P2P access capability is pre-checked on host side
+                size_t src_ldim = all_offsets[src_device + 1] - all_offsets[src_device];
+                size_t bytes_to_recv = src_ldim * batch;
+                size_t dst_offset = all_offsets[src_device];
+                size_t stride = all_offsets[64];  // Using 64 as max devices
                 
-                if (can_access_peer)
+                for (size_t offset = 0; offset < bytes_to_recv; offset += stage_size)
                 {
-                    // Direct P2P access to source device memory
-                    size_t src_ldim = all_offsets[src_device + 1] - all_offsets[src_device];
-                    size_t bytes_to_recv = src_ldim * batch;
-                    size_t dst_offset = all_offsets[src_device];
-                    size_t stride = all_offsets[64];  // Using 64 as max devices
-                    
-                    for (size_t offset = 0; offset < bytes_to_recv; offset += stage_size)
+                    size_t recv_t = offset + t * 16;
+                    if (recv_t < bytes_to_recv)
                     {
-                        size_t recv_t = offset + t * 16;
-                        if (recv_t < bytes_to_recv)
-                        {
-                            size_t row = recv_t / src_ldim;
-                            size_t col = recv_t % src_ldim;
-                            size_t out_t = row * stride + col + dst_offset;
-                            
-                            // For P2P, we need to enable peer access first
-                            uint4* src = (uint4*)data_ptr;  // This would be replaced with actual P2P access
-                            *((uint4*) (out_data_ptr + out_t)) = src[t];
-                        }
+                        size_t row = recv_t / src_ldim;
+                        size_t col = recv_t % src_ldim;
+                        size_t out_t = row * stride + col + dst_offset;
+                        
+                        // For P2P, we need to enable peer access first
+                        uint4* src = (uint4*)data_ptr;  // This would be replaced with actual P2P access
+                        *((uint4*) (out_data_ptr + out_t)) = src[t];
                     }
-                }
-                else
-                {
-                    // Fallback to traditional method would go here
-                    // For now, we'll just skip
                 }
             }
         }
