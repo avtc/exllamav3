@@ -4,6 +4,20 @@
 #include <torch/extension.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <pybind11/cast.h>
+
+// Prevent pybind11 from automatically creating type casters for CUDA stream types
+// which have incomplete type information
+namespace pybind11 { namespace detail {
+    template<> struct type_caster<cudaStream_t> {
+        public:
+        PYBIND11_TYPE_CASTER(cudaStream_t, _("cudaStream_t"));
+
+        bool load(handle src, bool convert) {
+            return false; // Don't load, use void* instead
+        }
+    };
+}}
 
 #include "stloader.h"
 #include "hadamard.h"
