@@ -422,18 +422,28 @@ void p2p_copy_tensor_2d_async(
         return;
     }
     
-    // Use cudaMemcpy2DPeerAsync for 2D copy
-    result = cudaMemcpy2DPeerAsync(
-        dst_tensor.data_ptr(),
-        dst_pitch,
-        src_tensor.data_ptr(),
-        src_pitch,
-        width * src_tensor.element_size(),
-        height,
-        dst_device,
-        src_device,
-        0  // Default stream
-    );
+    // Use cudaMemcpy3DPeerAsync for 2D copy (with depth=1)
+    cudaMemcpy3DPeerParms params = {};
+    params.srcDevice = src_device;
+    params.dstDevice = dst_device;
+    
+    // Setup source pitched pointer
+    params.srcPtr.ptr = src_tensor.data_ptr();
+    params.srcPtr.pitch = src_pitch;
+    params.srcPtr.xsize = width * src_tensor.element_size();
+    params.srcPtr.ysize = height;
+    
+    // Setup destination pitched pointer
+    params.dstPtr.ptr = dst_tensor.data_ptr();
+    params.dstPtr.pitch = dst_pitch;
+    params.dstPtr.xsize = width * src_tensor.element_size();
+    params.dstPtr.ysize = height;
+    
+    // Setup extent (width in bytes, height, depth=1)
+    params.extent = make_cudaExtent(width * src_tensor.element_size(), height, 1);
+    params.kind = cudaMemcpyDeviceToDevice;
+    
+    result = cudaMemcpy3DPeerAsync(&params, 0);
     
     if (result != cudaSuccess) {
         uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
@@ -460,13 +470,15 @@ void p2p_copy_tensor_3d_async(
     }
     
     // Use cudaMemcpy3DPeerAsync for 3D copy
-    result = cudaMemcpy3DPeerAsync(
-        &dst_pitched_ptr,
-        dst_device,
-        &src_pitched_ptr,
-        src_device,
-        0  // Default stream
-    );
+    cudaMemcpy3DPeerParms params = {};
+    params.srcDevice = src_device;
+    params.dstDevice = dst_device;
+    params.srcPtr = src_pitched_ptr;
+    params.dstPtr = dst_pitched_ptr;
+    params.extent = extent;
+    params.kind = cudaMemcpyDeviceToDevice;
+    
+    result = cudaMemcpy3DPeerAsync(&params, 0);
     
     if (result != cudaSuccess) {
         uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
