@@ -789,14 +789,20 @@ class TPBackendP2P:
 
     def enable_peer_access(self, peer_device: int):
         """Enable P2P access to a peer device."""
+        import traceback
+        log_tp(self.device, f"DEBUG: enable_peer_access() called for device {peer_device}")
+        log_tp(self.device, f"DEBUG: Call stack: {traceback.format_stack()}")
+        
         if not self.use_p2p:
             return False
         
         try:
+            log_tp(self.device, f"DEBUG: About to call ext.p2p_enable_peer_access for device {peer_device}")
             ext.p2p_enable_peer_access(self.device, peer_device, self.abort_flag)
             log_tp(self.device, f"P2P peer access enabled: {peer_device}")
             return True
         except Exception as e:
+            log_tp(self.device, f"DEBUG: Exception in enable_peer_access for {peer_device}: {e}")
             log_tp(self.device, f"P2P peer access enable failed: {e}")
             return False
 
