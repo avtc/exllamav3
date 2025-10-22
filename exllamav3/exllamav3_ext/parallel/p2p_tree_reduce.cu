@@ -287,7 +287,7 @@ void p2p_all_reduce_tree(
     cudaMemcpy(d_tree_info, h_tree_info.data(), num_ranks * sizeof(TreeInfo), cudaMemcpyHostToDevice);
     
     // Launch reduction kernel
-    int threads = min((int)CEIL_DIVIDE(data_size / 16ll, 32ll) * 32ll, MAX_NUM_THREADS);
+    int threads = min((int)(CEIL_DIVIDE(data_size / 16ll, 32ll) * 32ll), MAX_NUM_THREADS);
     
     uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
     
