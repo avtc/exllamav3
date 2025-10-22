@@ -4,20 +4,6 @@
 #include <torch/extension.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include <pybind11/cast.h>
-
-// Prevent pybind11 from automatically creating type casters for CUDA stream types
-// which have incomplete type information
-namespace pybind11 { namespace detail {
-    template<> struct type_caster<cudaStream_t> {
-        public:
-        PYBIND11_TYPE_CASTER(cudaStream_t, _("cudaStream_t"));
-
-        bool load(handle src, bool convert) {
-            return false; // Don't load, use void* instead
-        }
-    };
-}}
 
 #include "stloader.h"
 #include "hadamard.h"
@@ -104,10 +90,20 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("detect_full_p2p_connectivity", &detect_full_p2p_connectivity, "detect_full_p2p_connectivity");
     m.def("init_p2p_context", &init_p2p_context, "init_p2p_context");
     m.def("destroy_p2p_context", &destroy_p2p_context, "destroy_p2p_context");
-    m.def("p2p_memcpy_async", &p2p_memcpy_async, "p2p_memcpy_async");
+    // P2P memory management exports - use void* for stream parameters to avoid pybind11 issues
+    m.def("detect_full_p2p_connectivity", &detect_full_p2p_connectivity, "detect_full_p2p_connectivity");
+    m.def("init_p2p_context", &init_p2p_context, "init_p2p_context");
+    m.def("destroy_p2p_context", &destroy_p2p_context, "destroy_p2p_context");
+    m.def("p2p_memcpy_async", [](void* dst, const void* src, size_t count, int dst_device, int src_device, uintptr_t stream) {
+        p2p_memcpy_async(dst, src, count, dst_device, src_device, reinterpret_cast<cudaStream_t>(stream));
+    }, "p2p_memcpy_async", py::arg("dst"), py::arg("src"), py::arg("count"), py::arg("dst_device"), py::arg("src_device"), py::arg("stream"));
     m.def("p2p_memcpy", &p2p_memcpy, "p2p_memcpy");
-    m.def("p2p_sync", &p2p_sync, "p2p_sync");
-    m.def("p2p_barrier", &p2p_barrier, "p2p_barrier");
+    m.def("p2p_sync", [](int device, uintptr_t stream) {
+        p2p_sync(device, reinterpret_cast<cudaStream_t>(stream));
+    }, "p2p_sync", py::arg("device"), py::arg("stream"));
+    m.def("p2p_barrier", [](const std::vector<int>& devices, int this_device, uintptr_t stream) {
+        p2p_barrier(devices, this_device, reinterpret_cast<cudaStream_t>(stream));
+    }, "p2p_barrier", py::arg("devices"), py::arg("this_device"), py::arg("stream"));
     m.def("validate_p2p_connectivity", &validate_p2p_connectivity, "validate_p2p_connectivity");
 
     m.def("quantize_tiles", &quantize_tiles, "quantize_tiles");
