@@ -343,7 +343,9 @@ void p2p_init_direct_memory_pool(
     printf("DEBUG: Memory pool allocated successfully for device %d\n", device);
     
     // Enable P2P access for all peer devices during initialization
+    printf("DEBUG: About to call p2p_enable_all_peer_access for device %d\n", device);
     p2p_enable_all_peer_access(device, peer_devices, abort_flag);
+    printf("DEBUG: Returned from p2p_enable_all_peer_access for device %d\n", device);
 }
 
 void p2p_cleanup_direct_memory_pool(
@@ -622,6 +624,8 @@ void p2p_enable_all_peer_access(
     at::Tensor& abort_flag
 )
 {
+    printf("DEBUG: ENTERING p2p_enable_all_peer_access for device %d\n", device);
+    
     const at::cuda::OptionalCUDAGuard device_guard(device);
     
     if (device < 0 || device >= 64) {
@@ -640,13 +644,15 @@ void p2p_enable_all_peer_access(
     std::lock_guard<std::mutex> lock(pool.pool_mutex);
     
     printf("DEBUG: Enabling P2P for device %d, peer_devices count: %zu\n", device, peer_devices.size());
+    printf("DEBUG: About to iterate through peer devices\n");
     
     // Store target peers for deadlock detection
     if (pool.target_peers.empty()) {
         pool.target_peers.reserve(peer_devices.size());
     }
     
-    // Enable P2P access for all specified peer devices with deadlock prevention
+    // Enable P2P access for all specified peer devices with simplified approach
+    // Only enable peer access from lower device ID to higher device ID to avoid circular dependencies
     for (int peer_device : peer_devices) {
         if (peer_device < 0 || peer_device >= 64 || peer_device == device) {
             printf("DEBUG: Skipping peer device %d (invalid or same as device)\n", peer_device);
@@ -657,30 +663,15 @@ void p2p_enable_all_peer_access(
                device, peer_device, pool.peer_access_enabled[peer_device] ? "enabled" : "disabled");
         
         if (!pool.peer_access_enabled[peer_device]) {
-            // Check for potential circular dependency to prevent deadlock
-            // Avoid enabling A->B if B is also trying to enable A->B simultaneously
-            P2PDirectMemoryPool& peer_pool = g_direct_memory_pools[peer_device];
-            if (&peer_pool != &pool && peer_pool.initialized) {
-                bool peer_wants_this_device = false;
-                for (int pd : peer_pool.target_peers) {
-                    if (pd == device) {
-                        peer_wants_this_device = true;
-                        break;
-                    }
-                }
-                
-                if (peer_wants_this_device) {
-                    printf("WARNING: Detected potential circular dependency between device %d and %d. "
-                           "Skipping peer access enable to prevent deadlock.\n", device, peer_device);
-                    
-                    // Continue with other devices instead of failing completely
-                    pool.peer_access_enabled[peer_device] = false;
-                    continue;
-                }
+            // Simplified deadlock prevention: only enable from lower ID to higher ID
+            if (device > peer_device) {
+                printf("DEBUG: Skipping P2P enable from %d to %d (will be handled by device %d)\n",
+                       device, peer_device, peer_device);
+                pool.peer_access_enabled[peer_device] = false;
+                continue;
             }
             
-            // Store this peer as a target for future deadlock detection
-            pool.target_peers.push_back(peer_device);
+            printf("DEBUG: Enabling P2P access from device %d to peer %d\n", device, peer_device);
             
             // Try to enable peer access
             cudaError_t result = cudaDeviceEnablePeerAccess(peer_device, 0);
@@ -691,18 +682,17 @@ void p2p_enable_all_peer_access(
                 pool.peer_access_enabled[peer_device] = true;
                 printf("SUCCESS: Enabled P2P access from device %d to %d\n", device, peer_device);
             } else {
-                // Log error but continue with other devices (don't fail the whole initialization)
+                // Log error and abort on P2P access failure
                 printf("ERROR: Failed to enable P2P access from device %d to %d: %s\n",
                        device, peer_device, cudaGetErrorString(result));
                 
-                // Only set abort flag on critical failures
-                // Don't set abort for P2P access failures as they can happen and system can continue
-                if (result == cudaErrorInvalidValue) {
-                    if (abort_flag.defined()) {
-                        uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
-                        *abort_flag_ptr = 1;
-                    }
+                // Set abort flag on P2P access failure
+                if (abort_flag.defined()) {
+                    uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
+                    *abort_flag_ptr = 1;
+                    printf("CRITICAL: Aborting due to P2P access failure\n");
                 }
+                pool.peer_access_enabled[peer_device] = false;
             }
         } else {
             printf("DEBUG: P2P already enabled from device %d to %d\n", device, peer_device);

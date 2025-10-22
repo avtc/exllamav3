@@ -150,6 +150,7 @@ class TPBackendP2P:
                 peer_pool_size = max(pool_size // len(peer_devices), min_pool_size // 2) if peer_devices else pool_size
                 
                 try:
+                    log_tp(self.device, f"About to call p2p_init_direct_memory_pool for device {self.device}")
                     ext.p2p_init_direct_memory_pool(self.device, peer_pool_size, peer_devices, self.abort_flag)
                     log_tp(self.device, f"P2P direct memory pool initialized: {peer_pool_size // 1024**2}MB with {len(peer_devices)} peers")
                     
