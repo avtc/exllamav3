@@ -53,6 +53,12 @@ class TPBackendP2P:
             log_tp(device, f"P2P init: skip CPU process")
             return
 
+        # Create abort flag for P2P operations (must be done before memory pool init)
+        if self.device >= 0:
+            self.abort_flag = torch.zeros((1,), device=self.device, dtype=torch.int)
+        else:
+            self.abort_flag = None
+            
         self.active_devices = active_devices
         self.world_size = len(active_devices)
         self.rank = active_devices.index(device)
@@ -103,11 +109,6 @@ class TPBackendP2P:
             shbuf_size
         )
         
-        # Create abort flag for P2P operations
-        if self.device >= 0:
-            self.abort_flag = torch.zeros((1,), device=self.device, dtype=torch.int)
-        else:
-            self.abort_flag = None
         
         # Initialize monitoring tools if available
         self.monitor = None
@@ -122,7 +123,6 @@ class TPBackendP2P:
             # Set topology for monitoring
             if self.monitor and self.p2p_topology:
                 self.monitor.set_topology(self.p2p_topology)
-
     def _init_p2p_memory_pool(self):
         """Initialize P2P memory pool for this device with adaptive sizing."""
         if self.device < 0 or not self.use_p2p:
