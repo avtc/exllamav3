@@ -43,11 +43,9 @@ void p2p_tree_reduce_kernel_up(
     int t = threadIdx.x;
     auto grid = cg::this_grid();
     
-    __shared__ bool r;
     int num_ranks = __popc(device_mask);
     if (num_ranks <= 1) return;
     
-    uint8_t* data_end = data_ptr + data_size;
     const size_t reduce_stage_size = blockDim.x * sizeof(uint4);
     
     // Get tree information for this device
@@ -63,15 +61,6 @@ void p2p_tree_reduce_kernel_up(
     // Reduce phase: collect data from children
     for (int child_idx = 0; child_idx < my_tree.num_children; ++child_idx) {
         int child_device = my_tree.children[child_idx];
-        
-        // Check P2P capability
-        int can_access_child;
-        cudaDeviceCanAccessPeer(&can_access_child, this_device, child_device);
-        
-        if (!can_access_child) {
-            // Fallback for non-P2P connections
-            continue;
-        }
         
         // Process data in chunks
         size_t chunk_size = reduce_stage_size;
@@ -120,7 +109,6 @@ void p2p_tree_reduce_kernel_down(
     int num_ranks = __popc(device_mask);
     if (num_ranks <= 1) return;
     
-    uint8_t* data_end = data_ptr + data_size;
     const size_t reduce_stage_size = blockDim.x * sizeof(uint4);
     
     // Get tree information for this device
@@ -130,15 +118,6 @@ void p2p_tree_reduce_kernel_down(
     if (my_tree.num_children > 0) {
         for (int child_idx = 0; child_idx < my_tree.num_children; ++child_idx) {
             int child_device = my_tree.children[child_idx];
-            
-            // Check P2P capability
-            int can_access_child;
-            cudaDeviceCanAccessPeer(&can_access_child, this_device, child_device);
-            
-            if (!can_access_child) {
-                // Fallback for non-P2P connections
-                continue;
-            }
             
             // Process data in chunks
             size_t chunk_size = reduce_stage_size;
