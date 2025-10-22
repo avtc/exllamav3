@@ -29,9 +29,13 @@ def benchmark_p2p_bandwidth(backend, src_device, dst_device, sizes_mb, num_itera
         size_bytes = size_mb * 1024 * 1024
         size_elements = size_bytes // 4  # Assuming float32
         
-        # Create test tensors
-        src_tensor = torch.randn(size_elements, dtype=torch.float32, device=src_device)
-        dst_tensor = torch.zeros(size_elements, dtype=torch.float32, device=dst_device)
+        # Create test tensors on CPU first to avoid peer access issues
+        src_tensor_cpu = torch.randn(size_elements, dtype=torch.float32)
+        dst_tensor_cpu = torch.zeros(size_elements, dtype=torch.float32)
+        
+        # Then move to GPU devices
+        src_tensor = src_tensor_cpu.to(src_device)
+        dst_tensor = dst_tensor_cpu.to(dst_device)
         
         # Warm up
         for _ in range(3):
