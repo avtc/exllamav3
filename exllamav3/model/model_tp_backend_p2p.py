@@ -253,9 +253,11 @@ class TPBackendP2P(TPBackend):
                 log_tp(self.device, f"Master created P2P context: {self.p2p_context}")
                 
                 # Store the context pointer in shared memory for other processes to access
-                context_ptr_array = np.array([self.p2p_context], dtype=np.uint64)
-                self.tensor_g[:8] = torch.from_numpy(context_ptr_array).to(self.tensor_g.device)
-                log_tp(self.device, f"Stored P2P context pointer in shared memory")
+                # Use raw bytes to preserve the full 64-bit pointer
+                context_bytes = self.p2p_context.to_bytes(8, byteorder='little')
+                context_np = np.frombuffer(context_bytes, dtype=np.uint8)
+                self.tensor_g[:8] = torch.from_numpy(context_np).to(self.tensor_g.device)
+                log_tp(self.device, f"Stored P2P context pointer ({len(context_bytes)} bytes) in shared memory")
                 
             else:
                 # Slave processes wait for master to create context and then retrieve it
@@ -264,8 +266,9 @@ class TPBackendP2P(TPBackend):
                 # Wait for master to store the context pointer
                 deadline = time.time() + 10  # 10 second timeout
                 while time.time() < deadline:
-                    context_ptr_array = self.tensor_g[:8].cpu().numpy().astype(np.uint64)
-                    context_ptr = context_ptr_array[0]
+                    # Retrieve the raw bytes and convert back to pointer
+                    context_bytes = self.tensor_g[:8].cpu().numpy().tobytes()
+                    context_ptr = int.from_bytes(context_bytes[:8], byteorder='little')
                     
                     if context_ptr != 0:
                         self.p2p_context = context_ptr
