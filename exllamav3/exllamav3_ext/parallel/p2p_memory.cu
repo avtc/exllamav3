@@ -27,7 +27,7 @@ struct P2PMemoryPool {
     };
     
     FreeBlock* free_list;
-    // Mutex for thread safety would be needed in a real implementation
+    std::mutex pool_mutex;
 };
 
 // Device-specific memory pools
@@ -71,6 +71,8 @@ void p2p_init_memory_pool(
     
     P2PMemoryPool& pool = g_memory_pools[device];
     
+    std::lock_guard<std::mutex> lock(pool.pool_mutex);
+    
     if (pool.initialized) {
         return; // Already initialized
     }
@@ -111,6 +113,8 @@ void p2p_cleanup_memory_pool(
     
     P2PMemoryPool& pool = g_memory_pools[device];
     
+    std::lock_guard<std::mutex> lock(pool.pool_mutex);
+    
     if (!pool.initialized) {
         return;
     }
@@ -148,6 +152,8 @@ void* p2p_allocate_from_pool(
     }
     
     P2PMemoryPool& pool = g_memory_pools[device];
+    
+    std::lock_guard<std::mutex> lock(pool.pool_mutex);
     
     if (!pool.initialized) {
         return nullptr;
@@ -213,6 +219,8 @@ void p2p_free_to_pool(
     
     P2PMemoryPool& pool = g_memory_pools[device];
     
+    std::lock_guard<std::mutex> lock(pool.pool_mutex);
+    
     if (!pool.initialized) {
         return;
     }
@@ -228,13 +236,49 @@ void p2p_free_to_pool(
     new_block->offset = offset;
     new_block->size = size;
     
-    // Insert into free list (simple insertion at beginning)
-    new_block->next = pool.free_list;
-    pool.free_list = new_block;
+    // Insert into free list in sorted order by offset
+    P2PMemoryPool::FreeBlock* prev = nullptr;
+    P2PMemoryPool::FreeBlock* current = pool.free_list;
+    
+    // Find the correct position to insert the new block
+    while (current && current->offset < new_block->offset) {
+        prev = current;
+        current = current->next;
+    }
+    
+    // Insert the new block
+    if (prev) {
+        prev->next = new_block;
+    } else {
+        pool.free_list = new_block;
+    }
+    new_block->next = current;
     
     pool.used_size -= size;
     
-    // In a real implementation, we would coalesce adjacent free blocks
+    // Coalesce adjacent free blocks
+    bool coalesced = true;
+    while (coalesced) {
+        coalesced = false;
+        prev = nullptr;
+        current = pool.free_list;
+        
+        while (current && current->next) {
+            P2PMemoryPool::FreeBlock* next = current->next;
+            
+            // Check if current block and next block are adjacent
+            if (current->offset + current->size == next->offset) {
+                // Merge the blocks
+                current->size += next->size;
+                current->next = next->next;
+                delete next;
+                coalesced = true;
+            } else {
+                prev = current;
+                current = current->next;
+            }
+        }
+    }
 }
 
 // Get pointer to peer device memory
