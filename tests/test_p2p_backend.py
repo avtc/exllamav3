@@ -68,7 +68,7 @@ class TestP2PConnectivityDetection:
         
         result = check_p2p_connectivity([0, 1])
         assert result is True
-        # Should check P2P access in both directions
+        # Should check P2P access in one direction for each unique pair
         assert mock_cuda_set_device.call_count == 2  # 2 unique device pairs, 1 device set each
         assert mock_cuda_can_access_peer.call_count == 2
 

@@ -76,8 +76,8 @@ def check_p2p_connectivity(active_devices: list[int]) -> bool:
     Check if all GPUs in the system are fully peer connected.
     
     This function verifies that every GPU in the provided list can establish
-    peer-to-peer communication with every other GPU. This is a prerequisite
-    for using the P2P backend.
+    peer-to-peer communication with every other GPU in at least one direction.
+    This is a prerequisite for using the P2P backend.
     
     Args:
         active_devices: List of GPU device IDs to check for P2P connectivity
@@ -98,7 +98,7 @@ def check_p2p_connectivity(active_devices: list[int]) -> bool:
         
     Note:
         - For single device or empty lists, returns True (no P2P needed)
-        - Checks bidirectional connectivity between all GPU pairs
+        - Checks unidirectional connectivity between all GPU pairs
         - May require elevated privileges on some systems
     """
     lib = _cudart()
@@ -133,13 +133,13 @@ def check_p2p_connectivity(active_devices: list[int]) -> bool:
     except Exception as e:
         raise RuntimeError(f"Failed to get device count: {e}")
     
-    # Check P2P connectivity between all pairs
+    # Check P2P connectivity between all pairs (unidirectional only)
     for i, device_a in enumerate(active_devices):
         for j, device_b in enumerate(active_devices):
             if i == j:
                 continue
                 
-            # Check P2P access in both directions
+            # Check P2P access in one direction only
             try:
                 # Check device_a -> device_b
                 cuda_set_device = lib.cudaSetDevice
@@ -153,16 +153,6 @@ def check_p2p_connectivity(active_devices: list[int]) -> bool:
                 cuda_can_access_peer.argtypes = [ctypes.c_int, ctypes.c_int]
                 cuda_can_access_peer.restype = ctypes.c_int
                 can_access = cuda_can_access_peer(device_a, device_b)
-                
-                if can_access != 1:
-                    return False
-                    
-                # Check device_b -> device_a (bidirectional check)
-                err = cuda_set_device(device_b)
-                if err != CUDA_SUCCESS:
-                    raise RuntimeError(f"Failed to set device {device_b}: {_cuda_error_string(err)}")
-                
-                can_access = cuda_can_access_peer(device_b, device_a)
                 
                 if can_access != 1:
                     return False
