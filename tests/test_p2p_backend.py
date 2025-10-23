@@ -69,7 +69,7 @@ class TestP2PConnectivityDetection:
         result = check_p2p_connectivity([0, 1])
         assert result is True
         # Should check P2P access in both directions
-        assert mock_cuda_set_device.call_count == 4  # 2 devices, 2 directions each
+        assert mock_cuda_set_device.call_count == 2  # 2 unique device pairs, 1 device set each
         assert mock_cuda_can_access_peer.call_count == 2
 
     def test_check_p2p_connectivity_multiple_devices_not_connected(self, mocker):
@@ -117,7 +117,7 @@ class TestP2PConnectivityDetection:
         enable_p2p_access([0, 1])
         
         # Should enable P2P access in both directions for each device pair
-        assert mock_cuda_set_device.call_count == 4  # 2 devices, 2 directions each
+        assert mock_cuda_set_device.call_count == 2  # 2 unique device pairs, 1 device set each
         assert mock_cuda_enable_peer_access.call_count == 2
 
     def test_disable_p2p_access(self, mocker):
@@ -134,7 +134,7 @@ class TestP2PConnectivityDetection:
         disable_p2p_access([0, 1])
         
         # Should disable P2P access in both directions for each device pair
-        assert mock_cuda_set_device.call_count == 4  # 2 devices, 2 directions each
+        assert mock_cuda_set_device.call_count == 2  # 2 unique device pairs, 1 device set each
         assert mock_cuda_disable_peer_access.call_count == 2
 
 
