@@ -40,7 +40,7 @@ def debug_barrier():
     for i in devices:
         for j in devices:
             if i != j:
-                can_access = torch.cuda.device_can_access_peer(i, j)
+                can_access = torch.cuda.can_device_access_peer(i, j)
                 print(f"Device {i} can access device {j}: {can_access}")
     
     print("\nTrying individual steps...")
