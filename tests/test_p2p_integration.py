@@ -205,13 +205,20 @@ def run_p2p_test_multi_process(test_func, devices=None):
     processes = []
     
     # Use the same pattern as real tensor parallel system
-    # Create backend args like the real system does
+    # Create backend args ONCE like the real system does (lines 56-60 in model_tp.py)
     import uuid
+    from ..util import find_free_port
+    
+    # Find a free port and create backend args once (same as real system)
+    master_addr = os.environ.get("EXLLAMA_MASTER_ADDR", "127.0.0.1")
+    master_port = os.environ.get("EXLLAMA_MASTER_PORT", find_free_port())
     backend_args = {
         "type": "p2p",
-        "init_method": "tcp://127.0.0.1:29500",
+        "init_method": f"tcp://{master_addr}:{master_port}",
         "uuid": uuid.uuid4().hex,
     }
+    
+    print(f"DEBUG: Created backend args: {backend_args}")
     
     try:
         # Start worker processes for each device (like the real system)
