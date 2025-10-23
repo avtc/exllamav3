@@ -352,22 +352,26 @@ void p2p_device_barrier(
             }
             
             // Allocate P2P accessible memory for synchronization data
-            for (int dev = 0; dev < 64; dev++) {
-                if (dev < actual_device_count) {
-                    const at::cuda::OptionalCUDAGuard guard(dev);
-                    cudaError_t alloc_result = cudaMalloc(&g_barrier_sync_data[dev], sizeof(BarrierSyncData));
-                    if (alloc_result == cudaSuccess) {
-                        // Initialize the synchronization data
-                        cudaMemset(g_barrier_sync_data[dev], 0, sizeof(BarrierSyncData));
-                    } else {
-                        printf("WARNING: Failed to allocate sync data for device %d\n", dev);
-                        g_barrier_sync_data[dev] = nullptr;
-                    }
+            for (int dev = 0; dev < actual_device_count; dev++) {
+                const at::cuda::OptionalCUDAGuard guard(dev);
+                cudaError_t alloc_result = cudaMalloc(&g_barrier_sync_data[dev], sizeof(BarrierSyncData));
+                if (alloc_result == cudaSuccess) {
+                    // Initialize the synchronization data
+                    cudaMemset(g_barrier_sync_data[dev], 0, sizeof(BarrierSyncData));
+                    printf("DEBUG: Allocated sync data for device %d\n", dev);
                 } else {
+                    printf("WARNING: Failed to allocate sync data for device %d: %s\n", dev, cudaGetErrorString(alloc_result));
                     g_barrier_sync_data[dev] = nullptr;
                 }
             }
+            
+            // Initialize remaining entries to null
+            for (int dev = actual_device_count; dev < 64; dev++) {
+                g_barrier_sync_data[dev] = nullptr;
+            }
+            
             sync_data_initialized = true;
+            printf("DEBUG: Sync data initialization completed\n");
         }
     }
     
