@@ -13,9 +13,9 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'exllamav3'))
 
 try:
-    from exllamav3_ext import p2p_ext
+    import exllamav3_ext
 except ImportError as e:
-    print(f"Failed to import p2p_ext: {e}")
+    print(f"Failed to import exllamav3_ext: {e}")
     print("Make sure the exllamav3 extension is built and installed")
     sys.exit(1)
 
@@ -68,7 +68,7 @@ def test_tree_reduce_barrier():
                 y = torch.matmul(x, x.T)
                 
                 # Call the barrier function
-                p2p_ext.p2p_device_barrier(config, device_id, abort_flag)
+                exllamav3_ext.p2p_device_barrier(config, device_id, abort_flag)
                 
                 # Check if abort flag was set
                 if abort_flag.item() != 0:
@@ -125,7 +125,7 @@ def test_barrier_scalability():
             x = torch.randn(500, 500, device=f'cuda:{device_id}')
             y = x * 2.0
             
-            p2p_ext.p2p_device_barrier(devices, device_id, abort_flag)
+            exllamav3_ext.p2p_device_barrier(devices, device_id, abort_flag)
         
         end_time = time.time()
         barrier_time = end_time - start_time
@@ -163,7 +163,7 @@ def test_error_handling():
         
         if invalid_device < device_count:
             print("Testing with invalid device in barrier...")
-            p2p_ext.p2p_device_barrier(devices, invalid_device, abort_flag)
+            exllamav3_ext.p2p_device_barrier(devices, invalid_device, abort_flag)
             
             if abort_flag.item() != 0:
                 print("✓ Error handling correctly detected invalid device")
@@ -175,7 +175,7 @@ def test_error_handling():
         
         # Test with empty device list
         print("Testing with empty device list...")
-        p2p_ext.p2p_device_barrier([], 0, abort_flag)
+        exllamav3_ext.p2p_device_barrier([], 0, abort_flag)
         
         print("✓ Error handling test completed")
         return True
