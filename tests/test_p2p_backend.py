@@ -471,20 +471,21 @@ class TestTPBackendP2PMemoryManagement:
                     backend.close()
                     
                     # Verify all shared memory buffers are closed
-                    expected_close_calls = [
-                        call.close(),
-                        call.close(),
-                        call.close(),
-                        call.close()
-                    ]
+                    # Since the mock_shm.side_effect creates new instances each time,
+                    # we need to track all instances created and verify they were called
+                    shm_calls = mock_shm.call_args_list
+                    assert len(shm_calls) == 4  # Should create 4 shared memory objects
+                    
                     # Check that close was called on each shared memory object
-                    shm_instances = [mock_shm.return_value for _ in range(4)]
-                    for shm_instance in shm_instances:
+                    # We need to access the actual instances that were created
+                    for call_args in shm_calls:
+                        shm_instance = call_args[0][0]  # First argument to SharedMemory constructor
                         shm_instance.close.assert_called_once()
                     
                     # Verify unlink is called for master process
                     if backend.master:
-                        for shm_instance in shm_instances:
+                        for call_args in shm_calls:
+                            shm_instance = call_args[0][0]  # First argument to SharedMemory constructor
                             shm_instance.unlink.assert_called_once()
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
