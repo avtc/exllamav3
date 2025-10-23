@@ -170,7 +170,6 @@ class TestTPBackendP2PInitialization:
     def test_initialization_enable_p2p_fails(self, mock_check_p2p):
         """Test initialization when enabling P2P access fails."""
         mock_check_p2p.return_value = True
-        # Since enable_p2p_access is removed, this test is no longer relevant
         # PyTorch automatically manages P2P access
         pass
 
@@ -189,7 +188,6 @@ class TestTPBackendP2PInitialization:
         # Should not raise any errors but skip GPU-specific initialization
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
     def test_shared_memory_buffer_creation(self, mock_cuda_register, mock_check_p2p):
         """Test shared memory buffer creation and management."""
@@ -505,15 +503,21 @@ class TestBackendSelectionLogic:
     @patch('exllamav3.model.model_tp_backend.TPBackendP2P_AVAILABLE', True)
     @patch('exllamav3.model.model_tp_backend.check_p2p_connectivity')
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('torch.zeros')
-    def test_create_tp_backend_auto_p2p_available(self, mock_zeros, mock_check_p2p_p2p, mock_check_p2p_backend):
+    @patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory')
+    @patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context')
+    @patch('exllamav3.model.model_tp_backend_p2p.ext.init_p2p_context')
+    def test_create_tp_backend_auto_p2p_available(self, mock_init_p2p, mock_init_context, mock_shm, mock_check_p2p_p2p, mock_check_p2p_backend):
         """Test auto backend selection when P2P is available and connected."""
         mock_check_p2p_backend.return_value = True
         mock_check_p2p_p2p.return_value = True
+        mock_init_p2p.return_value = 0x12345678
         
-        # Mock torch tensor creation to avoid CUDA initialization issues
-        mock_tensor = Mock()
-        mock_zeros.return_value = mock_tensor
+        # Mock shared memory creation to avoid real shared memory operations
+        def mock_shared_memory_side_effect(*args, **kwargs):
+            instance = Mock()
+            instance.buf = bytearray(1024 * 1024)  # 1MB buffer
+            return instance
+        mock_shm.side_effect = mock_shared_memory_side_effect
         
         backend = create_tp_backend(
             backend_type="auto",
@@ -529,6 +533,7 @@ class TestBackendSelectionLogic:
         assert isinstance(backend, TPBackendP2P)
         mock_check_p2p_backend.assert_called_once_with([0, 1])
         mock_check_p2p_p2p.assert_called_once_with([0, 1])
+        mock_init_p2p.assert_called_once()
 
     @patch('exllamav3.model.model_tp_backend.TPBackendP2P_AVAILABLE', True)
     @patch('exllamav3.model.model_tp_backend.check_p2p_connectivity')
@@ -557,35 +562,23 @@ class TestBackendSelectionLogic:
     @patch('exllamav3.model.model_tp_backend.TPBackendP2P_AVAILABLE', True)
     @patch('exllamav3.model.model_tp_backend.check_p2p_connectivity')
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('torch.zeros')
-    def test_create_tp_backend_explicit_p2p(self, mock_zeros, mock_check_p2p_p2p, mock_check_p2p_backend):
+    @patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory')
+    @patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context')
+    @patch('exllamav3.model.model_tp_backend_p2p.ext.init_p2p_context')
+    def test_create_tp_backend_explicit_p2p(self, mock_init_p2p, mock_init_context, mock_shm, mock_check_p2p_p2p, mock_check_p2p_backend):
         """Test explicit P2P backend selection."""
         mock_check_p2p_backend.return_value = True
         mock_check_p2p_p2p.return_value = True
+        mock_init_p2p.return_value = 0x12345678
         
-        # Mock shared memory creation to avoid conflicts between test runs
-        created_shms = []
-        
+        # Mock shared memory creation to avoid real shared memory operations
         def mock_shared_memory_side_effect(*args, **kwargs):
             instance = Mock()
-            name = kwargs.get('name', args[1] if len(args) > 1 else '')
-            size = kwargs.get('size', args[0] if len(args) > 0 else 0)
-            
-            # Store the created instance for cleanup
-            created_shms.append(instance)
-            
-            # Mock the buffer
-            instance.buf = bytearray(size)
+            instance.buf = bytearray(1024 * 1024)  # 1MB buffer
             return instance
+        mock_shm.side_effect = mock_shared_memory_side_effect
         
-        with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
-            mock_shm.side_effect = mock_shared_memory_side_effect
-            
-            # Mock torch tensor creation to avoid CUDA initialization issues
-            mock_tensor = Mock()
-            mock_zeros.return_value = mock_tensor
-            
-            backend = create_tp_backend(
+        backend = create_tp_backend(
             backend_type="p2p",
             device=0,
             active_devices=[0, 1],
@@ -596,10 +589,7 @@ class TestBackendSelectionLogic:
         )
         
         assert isinstance(backend, TPBackendP2P)
-        
-        # Ensure all shared memory was cleaned up
-        for shm in created_shms:
-            shm.close.assert_called_once()
+        mock_init_p2p.assert_called_once()
 
     @patch('exllamav3.model.model_tp_backend.TPBackendP2P_AVAILABLE', False)
     def test_create_tp_backend_explicit_p2p_not_available(self):

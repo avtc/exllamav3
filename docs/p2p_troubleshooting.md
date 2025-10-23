@@ -65,16 +65,7 @@ Before diving into detailed troubleshooting, check these common issues:
    - Ensure all GPUs support P2P (most modern GPUs do)
    - Mixed architectures may have limited P2P support
 
-4. **Enable P2P access manually:**
-   ```python
-   from exllamav3.model.model_tp_cuda import enable_p2p_access
-   devices = [0, 1, 2]
-   try:
-       enable_p2p_access(devices)
-       print("P2P access enabled successfully")
-   except Exception as e:
-       print(f"Failed to enable P2P: {e}")
-   ```
+4. **Note on P2P access:** PyTorch automatically manages P2P access between GPUs. Manual enabling is no longer required.
 
 #### Issue: "Failed to enable P2P access"
 
@@ -362,9 +353,7 @@ Create a debug script to test P2P functionality:
 #!/usr/bin/env python3
 import torch
 from exllamav3.model.model_tp_cuda import (
-    check_p2p_connectivity,
-    enable_p2p_access,
-    disable_p2p_access
+    check_p2p_connectivity
 )
 
 def debug_p2p_connectivity():
@@ -388,20 +377,12 @@ def debug_p2p_connectivity():
                     except Exception as e:
                         print(f"  GPU {dev_a} -> GPU {dev_b}: Error - {e}")
         
-        # Test P2P access enable/disable
-        print("\n=== P2P Access Test ===")
+        # Note: PyTorch automatically manages P2P access
+        print("\n=== P2P Access Note ===")
         if connected:
-            try:
-                enable_p2p_access(devices)
-                print("✅ P2P access enabled successfully")
-                
-                # Test disable
-                disable_p2p_access(devices)
-                print("✅ P2P access disabled successfully")
-            except Exception as e:
-                print(f"❌ P2P access test failed: {e}")
+            print("✅ P2P connectivity available - PyTorch will automatically manage access")
         else:
-            print("⚠️  P2P connectivity not available, skipping access test")
+            print("⚠️  P2P connectivity not available")
             
     except Exception as e:
         print(f"❌ P2P connectivity check failed: {e}")
