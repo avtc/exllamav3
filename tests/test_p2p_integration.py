@@ -275,6 +275,31 @@ class TestP2PCommunicationOperations:
         final_sum = tensor1.sum() + tensor2.sum()
         assert torch.isclose(final_sum, original_sum, rtol=1e-5)
 
+def _test_all_reduce_worker(device_idx, active_devices):
+    """Worker function for all-reduce test."""
+    backend = _create_multi_process_p2p_backend(device_idx, active_devices, "all_reduce")
+    
+    try:
+        # Create test tensor
+        tensor = torch.randn(1000, device=device_idx)
+        original_sum = tensor.sum()
+        
+        # Perform all-reduce
+        backend.all_reduce(tensor)
+        
+        # In multi-process all-reduce, each tensor should contain the sum
+        # of all tensors from all processes
+        final_sum = tensor.sum()
+        
+        # Verify the operation completed without error
+        assert torch.isclose(final_sum, original_sum * len(active_devices), rtol=1e-5)
+        
+        return f"Device {device_idx}: all_reduce completed successfully"
+        
+    finally:
+        backend.close()
+
+
     def test_all_reduce_operation_multi_process(self):
         """Test P2P all-reduce operation with proper multi-process setup."""
         with skip_if_no_p2p_support():
@@ -282,32 +307,8 @@ class TestP2PCommunicationOperations:
             if len(devices) < 2:
                 pytest.skip("Need at least 2 P2P-capable devices")
             
-            def test_all_reduce_worker(device_idx, active_devices):
-                """Worker function for all-reduce test."""
-                backend = _create_multi_process_p2p_backend(device_idx, active_devices, "all_reduce")
-                
-                try:
-                    # Create test tensor
-                    tensor = torch.randn(1000, device=device_idx)
-                    original_sum = tensor.sum()
-                    
-                    # Perform all-reduce
-                    backend.all_reduce(tensor)
-                    
-                    # In multi-process all-reduce, each tensor should contain the sum
-                    # of all tensors from all processes
-                    final_sum = tensor.sum()
-                    
-                    # Verify the operation completed without error
-                    assert torch.isclose(final_sum, original_sum * len(active_devices), rtol=1e-5)
-                    
-                    return f"Device {device_idx}: all_reduce completed successfully"
-                    
-                finally:
-                    backend.close()
-            
             # Run test in multi-process environment
-            results = run_p2p_test_multi_process(test_all_reduce_worker, devices)
+            results = run_p2p_test_multi_process(_test_all_reduce_worker, devices)
             
             # Verify all processes completed successfully
             assert len(results) == 2, f"Expected 2 processes, got {len(results)}"
