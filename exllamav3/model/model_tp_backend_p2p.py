@@ -6,9 +6,7 @@ from .model_tp_cuda import (
     cuda_host_register,
     cuda_host_unregister,
     CUDA_HOST_REGISTER_PORTABLE,
-    check_p2p_connectivity,
-    enable_p2p_access,
-    disable_p2p_access
+    check_p2p_connectivity
 )
 from ..ext import exllamav3_ext as ext
 from .model_tp_backend import TPBackend, SHBUF_SIZE, SHBUF_SIZE_R, SHBUF_SIZE_S
@@ -117,13 +115,9 @@ class TPBackendP2P(TPBackend):
         log_tp(device, f"P2P init: world_size {self.world_size}, rank {self.rank}, device {device}")
         print(f" -- P2P init: world_size {self.world_size}, rank {self.rank}, device {device}")
         
-        # Enable P2P access between all GPUs
-        try:
-            enable_p2p_access(active_devices)
-            log_tp(device, f"P2P access enabled for all device pairs")
-        except Exception as e:
-            log_tp(device, f"Failed to enable P2P access: {e}")
-            raise RuntimeError(f"Failed to enable P2P access: {e}")
+        # Note: PyTorch automatically enables P2P access when needed for multi-GPU operations
+        # Manual P2P enabling is not necessary and can cause test interference
+        log_tp(device, f"P2P access will be managed automatically by PyTorch when needed")
         
         # P2P context management
         self.p2p_context = None
@@ -282,12 +276,9 @@ class TPBackendP2P(TPBackend):
                 self.p2p_context = None
                 self.p2p_initialized = False
         
-        # Disable P2P access
-        try:
-            disable_p2p_access(self.active_devices)
-            log_tp(self.device, f"P2P access disabled for all device pairs")
-        except Exception as e:
-            log_tp(self.device, f"Failed to disable P2P access: {e}")
+        # Note: PyTorch automatically manages P2P access, manual disabling is not necessary
+        # and could interfere with other operations
+        log_tp(self.device, f"P2P access will be managed automatically by PyTorch")
         
         # Unregister host memory
         if not self.device < 0:

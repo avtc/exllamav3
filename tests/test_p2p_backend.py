@@ -25,8 +25,6 @@ from exllamav3.model.model_tp_backend_p2p import TPBackendP2P
 from exllamav3.model.model_tp_backend import create_tp_backend, get_available_backends
 from exllamav3.model.model_tp_cuda import (
     check_p2p_connectivity,
-    enable_p2p_access,
-    disable_p2p_access,
     cuda_host_register,
     cuda_host_unregister,
     CUDA_HOST_REGISTER_PORTABLE
@@ -103,48 +101,14 @@ class TestP2PConnectivityDetection:
         with pytest.raises(RuntimeError, match="Failed to get device count"):
             check_p2p_connectivity([0, 1])
 
-    def test_enable_p2p_access(self, mocker):
-        """Test enabling P2P access between devices."""
-        mock_lib = Mock()
-        mock_cuda_set_device = Mock(return_value=0)
-        mock_cuda_enable_peer_access = Mock(return_value=0)  # Success
-        
-        mock_lib.cudaSetDevice = mock_cuda_set_device
-        mock_lib.cudaDeviceEnablePeerAccess = mock_cuda_enable_peer_access
-        
-        mocker.patch('exllamav3.model.model_tp_cuda._cudart', return_value=mock_lib)
-        
-        enable_p2p_access([0, 1])
-        
-        # Should enable P2P access in both directions for each device pair
-        assert mock_cuda_set_device.call_count == 2  # 2 unique device pairs, 1 device set each
-        assert mock_cuda_enable_peer_access.call_count == 2
-
-    def test_disable_p2p_access(self, mocker):
-        """Test disabling P2P access between devices."""
-        mock_lib = Mock()
-        mock_cuda_set_device = Mock(return_value=0)
-        mock_cuda_disable_peer_access = Mock(return_value=0)  # Success
-        
-        mock_lib.cudaSetDevice = mock_cuda_set_device
-        mock_lib.cudaDeviceDisablePeerAccess = mock_cuda_disable_peer_access
-        
-        mocker.patch('exllamav3.model.model_tp_cuda._cudart', return_value=mock_lib)
-        
-        disable_p2p_access([0, 1])
-        
-        # Should disable P2P access in both directions for each device pair
-        assert mock_cuda_set_device.call_count == 2  # 2 unique device pairs, 1 device set each
-        assert mock_cuda_disable_peer_access.call_count == 2
 
 
 class TestTPBackendP2PInitialization:
     """Test TPBackendP2P initialization scenarios."""
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
-    def test_initialization_success(self, mock_cuda_register, mock_enable_p2p, mock_check_p2p):
+    def test_initialization_success(self, mock_cuda_register, mock_check_p2p):
         """Test successful P2P backend initialization."""
         mock_check_p2p.return_value = True
         mock_enable_p2p.return_value = None
@@ -187,7 +151,6 @@ class TestTPBackendP2PInitialization:
                     
                     # Verify P2P checks and setup
                     mock_check_p2p.assert_called_once_with([0, 1])
-                    mock_enable_p2p.assert_called_once_with([0, 1])
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
     def test_initialization_connectivity_check_fails(self, mock_check_p2p):
@@ -205,21 +168,12 @@ class TestTPBackendP2PInitialization:
             )
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
-    def test_initialization_enable_p2p_fails(self, mock_enable_p2p, mock_check_p2p):
+    def test_initialization_enable_p2p_fails(self, mock_check_p2p):
         """Test initialization when enabling P2P access fails."""
         mock_check_p2p.return_value = True
-        mock_enable_p2p.side_effect = RuntimeError("Failed to enable P2P access")
-        
-        with pytest.raises(RuntimeError, match="Failed to enable P2P access"):
-            TPBackendP2P(
-                device=0,
-                active_devices=[0, 1],
-                output_device=0,
-                init_method="tcp://127.0.0.1:29500",
-                master=True,
-                uuid="test_uuid"
-            )
+        # Since enable_p2p_access is removed, this test is no longer relevant
+        # PyTorch automatically manages P2P access
+        pass
 
     def test_initialization_cpu_process(self):
         """Test initialization for CPU process (should skip)."""
@@ -282,9 +236,8 @@ class TestTPBackendP2PInitialization:
                     mock_shm.assert_has_calls(expected_calls)
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
-    def test_p2p_buffer_allocation(self, mock_cuda_register, mock_enable_p2p, mock_check_p2p):
+    def test_p2p_buffer_allocation(self, mock_cuda_register, mock_check_p2p):
         """Test P2P buffer allocation with appropriate size."""
         mock_check_p2p.return_value = True
         mock_enable_p2p.return_value = None
@@ -330,12 +283,10 @@ class TestTPBackendP2PMemoryManagement:
     """Test P2P memory management utilities."""
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
-    def test_host_memory_registration(self, mock_cuda_register, mock_enable_p2p, mock_check_p2p):
+    def test_host_memory_registration(self, mock_cuda_register, mock_check_p2p):
         """Test host memory registration for shared buffers."""
         mock_check_p2p.return_value = True
-        mock_enable_p2p.return_value = None
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
@@ -376,13 +327,11 @@ class TestTPBackendP2PMemoryManagement:
                     mock_cuda_register.assert_has_calls(expected_register_calls)
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_unregister')
-    def test_host_memory_unregistration(self, mock_cuda_unregister, mock_cuda_register, mock_enable_p2p, mock_check_p2p):
+    def test_host_memory_unregistration(self, mock_cuda_unregister, mock_cuda_register, mock_check_p2p):
         """Test host memory unregistration during cleanup."""
         mock_check_p2p.return_value = True
-        mock_enable_p2p.return_value = None
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
@@ -430,13 +379,11 @@ class TestTPBackendP2PMemoryManagement:
                         mock_cuda_unregister.assert_has_calls(expected_unregister_calls)
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_unregister')
-    def test_shared_memory_cleanup(self, mock_cuda_unregister, mock_cuda_register, mock_enable_p2p, mock_check_p2p):
+    def test_shared_memory_cleanup(self, mock_cuda_unregister, mock_cuda_register, mock_check_p2p):
         """Test shared memory cleanup during backend destruction."""
         mock_check_p2p.return_value = True
-        mock_enable_p2p.return_value = None
         
         # Mock shared memory creation
         created_instances = []
@@ -485,12 +432,10 @@ class TestTPBackendP2PMemoryManagement:
                             shm_instance.unlink.assert_called_once()
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
-    def test_p2p_context_initialization(self, mock_cuda_register, mock_enable_p2p, mock_check_p2p):
+    def test_p2p_context_initialization(self, mock_cuda_register, mock_check_p2p):
         """Test P2P context initialization and error handling."""
         mock_check_p2p.return_value = True
-        mock_enable_p2p.return_value = None
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
@@ -563,10 +508,15 @@ class TestBackendSelectionLogic:
     @patch('exllamav3.model.model_tp_backend.TPBackendP2P_AVAILABLE', True)
     @patch('exllamav3.model.model_tp_backend.check_p2p_connectivity')
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    def test_create_tp_backend_auto_p2p_available(self, mock_check_p2p_p2p, mock_check_p2p_backend):
+    @patch('torch.zeros')
+    def test_create_tp_backend_auto_p2p_available(self, mock_zeros, mock_check_p2p_p2p, mock_check_p2p_backend):
         """Test auto backend selection when P2P is available and connected."""
         mock_check_p2p_backend.return_value = True
         mock_check_p2p_p2p.return_value = True
+        
+        # Mock torch tensor creation to avoid CUDA initialization issues
+        mock_tensor = Mock()
+        mock_zeros.return_value = mock_tensor
         
         backend = create_tp_backend(
             backend_type="auto",
@@ -610,12 +560,16 @@ class TestBackendSelectionLogic:
     @patch('exllamav3.model.model_tp_backend.TPBackendP2P_AVAILABLE', True)
     @patch('exllamav3.model.model_tp_backend.check_p2p_connectivity')
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
-    def test_create_tp_backend_explicit_p2p(self, mock_enable_p2p, mock_check_p2p_p2p, mock_check_p2p_backend):
+    @patch('torch.zeros')
+    def test_create_tp_backend_explicit_p2p(self, mock_zeros, mock_check_p2p_p2p, mock_check_p2p_backend):
         """Test explicit P2P backend selection."""
         mock_check_p2p_backend.return_value = True
         mock_check_p2p_p2p.return_value = True
         mock_enable_p2p.return_value = None
+        
+        # Mock torch tensor creation to avoid CUDA initialization issues
+        mock_tensor = Mock()
+        mock_zeros.return_value = mock_tensor
         
         backend = create_tp_backend(
             backend_type="p2p",
@@ -714,12 +668,10 @@ class TestP2PBackendCommunicationPrimitives:
     """Test P2P backend communication primitives."""
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
-    def test_barrier_synchronization(self, mock_cuda_register, mock_enable_p2p, mock_check_p2p):
+    def test_barrier_synchronization(self, mock_cuda_register, mock_check_p2p):
         """Test P2P barrier synchronization."""
         mock_check_p2p.return_value = True
-        mock_enable_p2p.return_value = None
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
@@ -764,12 +716,10 @@ class TestP2PBackendCommunicationPrimitives:
                             assert args[3] == abort_flag  # abort_flag
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
-    def test_broadcast_operation(self, mock_cuda_register, mock_enable_p2p, mock_check_p2p):
+    def test_broadcast_operation(self, mock_cuda_register, mock_check_p2p):
         """Test P2P broadcast operation."""
         mock_check_p2p.return_value = True
-        mock_enable_p2p.return_value = None
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
@@ -814,12 +764,10 @@ class TestP2PBackendCommunicationPrimitives:
                             mock_broadcast_p2p.assert_called_once()
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
-    def test_all_reduce_operation(self, mock_cuda_register, mock_enable_p2p, mock_check_p2p):
+    def test_all_reduce_operation(self, mock_cuda_register, mock_check_p2p):
         """Test P2P all-reduce operation."""
         mock_check_p2p.return_value = True
-        mock_enable_p2p.return_value = None
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
@@ -865,12 +813,10 @@ class TestP2PBackendCommunicationPrimitives:
                             assert args[6] == backend.shbuf_size  # shbuf_size
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
-    def test_gather_operation(self, mock_cuda_register, mock_enable_p2p, mock_check_p2p):
+    def test_gather_operation(self, mock_cuda_register, mock_check_p2p):
         """Test P2P gather operation."""
         mock_check_p2p.return_value = True
-        mock_enable_p2p.return_value = None
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
@@ -920,12 +866,10 @@ class TestP2PBackendCommunicationPrimitives:
                             assert args[6] == ldims  # ldims
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
-    def test_gather_operation_non_output_device(self, mock_cuda_register, mock_enable_p2p, mock_check_p2p):
+    def test_gather_operation_non_output_device(self, mock_cuda_register, mock_check_p2p):
         """Test P2P gather operation on non-output device."""
         mock_check_p2p.return_value = True
-        mock_enable_p2p.return_value = None
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:

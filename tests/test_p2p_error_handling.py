@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from exllamav3.model.model_tp_backend_p2p import TPBackendP2P
 from exllamav3.model.model_tp_backend import TPBackendNCCL, create_tp_backend
-from exllamav3.model.model_tp_cuda import check_p2p_connectivity, enable_p2p_access, disable_p2p_access
+from exllamav3.model.model_tp_cuda import check_p2p_connectivity
 
 
 class TestP2PConnectivityFailureScenarios:
@@ -125,10 +125,8 @@ class TestResourceCleanupOnErrors:
     def p2p_backend_context(self, connectivity_check=True, enable_p2p=True):
         """Context manager for P2P backend with error handling."""
         with patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity') as mock_check:
-            with patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access') as mock_enable:
-                with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
+            with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
                     mock_check.return_value = connectivity_check
-                    mock_enable.return_value = enable_p2p
                     
                     with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
                         with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context'):
@@ -175,10 +173,8 @@ class TestResourceCleanupOnErrors:
     def test_cleanup_on_shared_memory_error(self):
         """Test resource cleanup when shared memory error occurs."""
         with patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity') as mock_check:
-            with patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access') as mock_enable:
-                with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
+            with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
                     mock_check.return_value = True
-                    mock_enable.return_value = None
                     
                     # Test shared memory creation failure
                     with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
@@ -210,10 +206,8 @@ class TestResourceCleanupOnErrors:
     def test_memory_cleanup_verification(self):
         """Test that memory resources are properly cleaned up."""
         with patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity') as mock_check:
-            with patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access') as mock_enable:
-                with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
+            with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
                     mock_check.return_value = True
-                    mock_enable.return_value = None
                     
                     with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
                         with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context'):
@@ -396,8 +390,7 @@ class TestEdgeCasesAndBoundaryConditions:
         with patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity') as mock_check:
             mock_check.return_value = True
             
-            with patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access') as mock_enable:
-                with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
+            with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
                     with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory'):
                         with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context'):
                             with patch('exllamav3.model.model_tp_backend_p2p.ext.init_p2p_context') as mock_init_p2p:
@@ -429,8 +422,7 @@ class TestEdgeCasesAndBoundaryConditions:
         with patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity') as mock_check:
             mock_check.return_value = True
             
-            with patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access') as mock_enable:
-                with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
+            with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
                     with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory'):
                         with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context'):
                             with patch('exllamav3.model.model_tp_backend_p2p.ext.init_p2p_context') as mock_init_p2p:
@@ -462,8 +454,7 @@ class TestEdgeCasesAndBoundaryConditions:
         with patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity') as mock_check:
             mock_check.return_value = True
             
-            with patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access') as mock_enable:
-                with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
+            with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
                     with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory'):
                         with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context'):
                             with patch('exllamav3.model.model_tp_backend_p2p.ext.init_p2p_context') as mock_init_p2p:
@@ -502,8 +493,7 @@ class TestEdgeCasesAndBoundaryConditions:
         with patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity') as mock_check:
             mock_check.return_value = True
             
-            with patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access') as mock_enable:
-                with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
+            with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
                     with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory'):
                         with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context'):
                             with patch('exllamavav3.model.model_tp_backend_p2p.ext.init_p2p_context') as mock_init_p2p:
@@ -541,8 +531,7 @@ class TestEdgeCasesAndBoundaryConditions:
         with patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity') as mock_check:
             mock_check.return_value = True
             
-            with patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access') as mock_enable:
-                with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
+            with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
                     with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory'):
                         with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context'):
                             with patch('exllamav3.model.model_tp_backend_p2p.ext.init_p2p_context') as mock_init_p2p:
@@ -584,8 +573,7 @@ class TestEdgeCasesAndBoundaryConditions:
         with patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity') as mock_check:
             mock_check.return_value = True
             
-            with patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access') as mock_enable:
-                with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
+            with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
                     with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory'):
                         with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context'):
                             with patch('exllamav3.model.model_tp_backend_p2p.ext.init_p2p_context') as mock_init_p2p:
@@ -626,8 +614,7 @@ class TestErrorRecoveryStrategies:
         with patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity') as mock_check:
             mock_check.return_value = True
             
-            with patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access') as mock_enable:
-                with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
+            with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
                     with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory'):
                         with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context'):
                             with patch('exllamav3.model.model_tp_backend_p2p.ext.init_p2p_context') as mock_init_p2p:
@@ -670,8 +657,7 @@ class TestErrorRecoveryStrategies:
         with patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity') as mock_check:
             mock_check.return_value = True
             
-            with patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access') as mock_enable:
-                with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
+            with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
                     with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory'):
                         with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context'):
                             with patch('exllamav3.model.model_tp_backend_p2p.ext.init_p2p_context') as mock_init_p2p:
@@ -713,8 +699,7 @@ class TestErrorRecoveryStrategies:
         with patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity') as mock_check:
             mock_check.return_value = True
             
-            with patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access') as mock_enable:
-                with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
+            with patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register') as mock_register:
                     with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory'):
                         with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context'):
                             with patch('exllamav3.model.model_tp_backend_p2p.ext.init_p2p_context') as mock_init_p2p:

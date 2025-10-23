@@ -6,9 +6,7 @@ from .model_tp_cuda import (
     cuda_host_register,
     cuda_host_unregister,
     CUDA_HOST_REGISTER_PORTABLE,
-    check_p2p_connectivity,
-    enable_p2p_access,
-    disable_p2p_access
+    check_p2p_connectivity
 )
 from ..ext import exllamav3_ext as ext
 from multiprocessing import shared_memory, Barrier

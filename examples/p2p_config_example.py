@@ -19,7 +19,7 @@ from dataclasses import dataclass, asdict
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from exllamav3 import Generator, Job, model_init
-from exllamav3.model.model_tp_cuda import check_p2p_connectivity, enable_p2p_access, disable_p2p_access
+from exllamav3.model.model_tp_cuda import check_p2p_connectivity
 from exllamav3.model.model_tp_backend import get_available_backends, create_tp_backend
 
 
@@ -35,7 +35,6 @@ class P2PConfig:
     # P2P-specific settings
     p2p_buffer_size: int = 16 * 1024 * 1024  # 16MB default
     p2p_timeout: float = 15.0  # 15 seconds timeout
-    enable_p2p_access: bool = True
     
     # Performance tuning
     use_optimized_kernels: bool = True
@@ -96,14 +95,8 @@ class P2PConfigManager:
             if check_p2p_connectivity(self.config.devices):
                 print("✅ P2P connectivity check passed")
                 
-                # Test enabling P2P access
-                if self.config.enable_p2p_access:
-                    try:
-                        enable_p2p_access(self.config.devices)
-                        print("✅ P2P access enabled successfully")
-                    except Exception as e:
-                        print(f"⚠️  Failed to enable P2P access: {e}")
-                        return False
+                # Note: PyTorch automatically enables P2P access when needed for multi-GPU operations
+                print("✅ P2P access will be managed automatically by PyTorch when needed")
                 
                 return True
             else:
