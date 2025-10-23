@@ -275,30 +275,29 @@ class TestP2PCommunicationOperations:
         final_sum = tensor1.sum() + tensor2.sum()
         assert torch.isclose(final_sum, original_sum, rtol=1e-5)
 
-def _test_all_reduce_worker(device_idx, active_devices):
-    """Worker function for all-reduce test."""
-    backend = _create_multi_process_p2p_backend(device_idx, active_devices, "all_reduce")
-    
-    try:
-        # Create test tensor
-        tensor = torch.randn(1000, device=device_idx)
-        original_sum = tensor.sum()
+    def _test_all_reduce_worker(device_idx, active_devices):
+        """Worker function for all-reduce test."""
+        backend = _create_multi_process_p2p_backend(device_idx, active_devices, "all_reduce")
         
-        # Perform all-reduce
-        backend.all_reduce(tensor)
-        
-        # In multi-process all-reduce, each tensor should contain the sum
-        # of all tensors from all processes
-        final_sum = tensor.sum()
-        
-        # Verify the operation completed without error
-        assert torch.isclose(final_sum, original_sum * len(active_devices), rtol=1e-5)
-        
-        return f"Device {device_idx}: all_reduce completed successfully"
-        
-    finally:
-        backend.close()
-
+        try:
+            # Create test tensor
+            tensor = torch.randn(1000, device=device_idx)
+            original_sum = tensor.sum()
+            
+            # Perform all-reduce
+            backend.all_reduce(tensor)
+            
+            # In multi-process all-reduce, each tensor should contain the sum
+            # of all tensors from all processes
+            final_sum = tensor.sum()
+            
+            # Verify the operation completed without error
+            assert torch.isclose(final_sum, original_sum * len(active_devices), rtol=1e-5)
+            
+            return f"Device {device_idx}: all_reduce completed successfully"
+            
+        finally:
+            backend.close()
 
     def test_all_reduce_operation_multi_process(self):
         """Test P2P all-reduce operation with proper multi-process setup."""
