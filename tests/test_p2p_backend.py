@@ -339,8 +339,18 @@ class TestTPBackendP2PMemoryManagement:
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
-            mock_shm_instance = Mock()
-            mock_shm.return_value = mock_shm_instance
+            def mock_shared_memory_side_effect(*args, **kwargs):
+                instance = Mock()
+                # Determine buffer size based on name parameter
+                name = kwargs.get('name', args[1] if len(args) > 1 else '')
+                size = kwargs.get('size', args[0] if len(args) > 0 else 0)
+                
+                # Use the largest size among all expected buffers
+                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                instance.buf = bytearray(buffer_size)
+                return instance
+            
+            mock_shm.side_effect = mock_shared_memory_side_effect
             
             # Mock torch extension functions
             with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context') as mock_init_context:
@@ -376,8 +386,18 @@ class TestTPBackendP2PMemoryManagement:
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
-            mock_shm_instance = Mock()
-            mock_shm.return_value = mock_shm_instance
+            def mock_shared_memory_side_effect(*args, **kwargs):
+                instance = Mock()
+                # Determine buffer size based on name parameter
+                name = kwargs.get('name', args[1] if len(args) > 1 else '')
+                size = kwargs.get('size', args[0] if len(args) > 0 else 0)
+                
+                # Use the largest size among all expected buffers
+                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                instance.buf = bytearray(buffer_size)
+                return instance
+            
+            mock_shm.side_effect = mock_shared_memory_side_effect
             
             # Mock torch extension functions
             with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context') as mock_init_context:
@@ -420,8 +440,18 @@ class TestTPBackendP2PMemoryManagement:
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
-            mock_shm_instance = Mock()
-            mock_shm.return_value = mock_shm_instance
+            def mock_shared_memory_side_effect(*args, **kwargs):
+                instance = Mock()
+                # Determine buffer size based on name parameter
+                name = kwargs.get('name', args[1] if len(args) > 1 else '')
+                size = kwargs.get('size', args[0] if len(args) > 0 else 0)
+                
+                # Use the largest size among all expected buffers
+                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                instance.buf = bytearray(buffer_size)
+                return instance
+            
+            mock_shm.side_effect = mock_shared_memory_side_effect
             
             # Mock torch extension functions
             with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context') as mock_init_context:
@@ -472,8 +502,18 @@ class TestTPBackendP2PMemoryManagement:
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
-            mock_shm_instance = Mock()
-            mock_shm.return_value = mock_shm_instance
+            def mock_shared_memory_side_effect(*args, **kwargs):
+                instance = Mock()
+                # Determine buffer size based on name parameter
+                name = kwargs.get('name', args[1] if len(args) > 1 else '')
+                size = kwargs.get('size', args[0] if len(args) > 0 else 0)
+                
+                # Use the largest size among all expected buffers
+                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                instance.buf = bytearray(buffer_size)
+                return instance
+            
+            mock_shm.side_effect = mock_shared_memory_side_effect
             
             # Test successful initialization
             with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context') as mock_init_context:
@@ -681,8 +721,18 @@ class TestP2PBackendCommunicationPrimitives:
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
-            mock_shm_instance = Mock()
-            mock_shm.return_value = mock_shm_instance
+            def mock_shared_memory_side_effect(*args, **kwargs):
+                instance = Mock()
+                # Determine buffer size based on name parameter
+                name = kwargs.get('name', args[1] if len(args) > 1 else '')
+                size = kwargs.get('size', args[0] if len(args) > 0 else 0)
+                
+                # Use the largest size among all expected buffers
+                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                instance.buf = bytearray(buffer_size)
+                return instance
+            
+            mock_shm.side_effect = mock_shared_memory_side_effect
             
             # Mock torch extension functions
             with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context') as mock_init_context:
@@ -721,8 +771,18 @@ class TestP2PBackendCommunicationPrimitives:
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
-            mock_shm_instance = Mock()
-            mock_shm.return_value = mock_shm_instance
+            def mock_shared_memory_side_effect(*args, **kwargs):
+                instance = Mock()
+                # Determine buffer size based on name parameter
+                name = kwargs.get('name', args[1] if len(args) > 1 else '')
+                size = kwargs.get('size', args[0] if len(args) > 0 else 0)
+                
+                # Use the largest size among all expected buffers
+                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                instance.buf = bytearray(buffer_size)
+                return instance
+            
+            mock_shm.side_effect = mock_shared_memory_side_effect
             
             # Mock torch extension functions
             with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context') as mock_init_context:
@@ -761,8 +821,18 @@ class TestP2PBackendCommunicationPrimitives:
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
-            mock_shm_instance = Mock()
-            mock_shm.return_value = mock_shm_instance
+            def mock_shared_memory_side_effect(*args, **kwargs):
+                instance = Mock()
+                # Determine buffer size based on name parameter
+                name = kwargs.get('name', args[1] if len(args) > 1 else '')
+                size = kwargs.get('size', args[0] if len(args) > 0 else 0)
+                
+                # Use the largest size among all expected buffers
+                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                instance.buf = bytearray(buffer_size)
+                return instance
+            
+            mock_shm.side_effect = mock_shared_memory_side_effect
             
             # Mock torch extension functions
             with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context') as mock_init_context:
@@ -802,8 +872,18 @@ class TestP2PBackendCommunicationPrimitives:
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
-            mock_shm_instance = Mock()
-            mock_shm.return_value = mock_shm_instance
+            def mock_shared_memory_side_effect(*args, **kwargs):
+                instance = Mock()
+                # Determine buffer size based on name parameter
+                name = kwargs.get('name', args[1] if len(args) > 1 else '')
+                size = kwargs.get('size', args[0] if len(args) > 0 else 0)
+                
+                # Use the largest size among all expected buffers
+                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                instance.buf = bytearray(buffer_size)
+                return instance
+            
+            mock_shm.side_effect = mock_shared_memory_side_effect
             
             # Mock torch extension functions
             with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context') as mock_init_context:
@@ -847,8 +927,18 @@ class TestP2PBackendCommunicationPrimitives:
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
-            mock_shm_instance = Mock()
-            mock_shm.return_value = mock_shm_instance
+            def mock_shared_memory_side_effect(*args, **kwargs):
+                instance = Mock()
+                # Determine buffer size based on name parameter
+                name = kwargs.get('name', args[1] if len(args) > 1 else '')
+                size = kwargs.get('size', args[0] if len(args) > 0 else 0)
+                
+                # Use the largest size among all expected buffers
+                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                instance.buf = bytearray(buffer_size)
+                return instance
+            
+            mock_shm.side_effect = mock_shared_memory_side_effect
             
             # Mock torch extension functions
             with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_init_context') as mock_init_context:
