@@ -36,67 +36,52 @@ class TestP2PConnectivityDetection:
 
     def test_check_p2p_connectivity_single_device(self, mocker):
         """Test connectivity check with single device."""
-        mock_lib = Mock()
-        mock_cuda_get_device_count = Mock(return_value=1)
-        mock_cuda_can_access_peer = Mock(return_value=1)
-        
-        mock_lib.cudaGetDeviceCount = mock_cuda_get_device_count
-        mock_lib.cudaDeviceCanAccessPeer = mock_cuda_can_access_peer
-        mock_lib.cudaSetDevice = Mock(return_value=0)
-        
-        mocker.patch('exllamav3.model.model_tp_cuda._cudart', return_value=mock_lib)
+        # Mock PyTorch CUDA functions
+        mock_torch = mocker.patch('torch.cuda')
+        mock_torch.device_count.return_value = 1
         
         result = check_p2p_connectivity([0])
         assert result is True
-        mock_cuda_get_device_count.assert_called_once()
-        # Should not call can_access_peer for single device
+        # Should not call device_count for single device
+        mock_torch.device_count.assert_not_called()
+        mock_torch.can_device_access_peer.assert_not_called()
 
     def test_check_p2p_connectivity_multiple_devices_connected(self, mocker):
         """Test connectivity check with multiple fully connected devices."""
-        mock_lib = Mock()
-        mock_cuda_get_device_count = Mock(return_value=2)
-        mock_cuda_can_access_peer = Mock(return_value=1)
-        mock_cuda_set_device = Mock(return_value=0)
-        
-        mock_lib.cudaGetDeviceCount = mock_cuda_get_device_count
-        mock_lib.cudaDeviceCanAccessPeer = mock_cuda_can_access_peer
-        mock_lib.cudaSetDevice = mock_cuda_set_device
-        
-        mocker.patch('exllamav3.model.model_tp_cuda._cudart', return_value=mock_lib)
+        # Mock PyTorch CUDA functions
+        mock_torch = mocker.patch('torch.cuda')
+        mock_torch.device_count.return_value = 2
+        mock_torch.can_device_access_peer.return_value = True
         
         result = check_p2p_connectivity([0, 1])
         assert result is True
-        # Should check P2P access in one direction for each unique pair
-        assert mock_cuda_set_device.call_count == 2  # 2 unique device pairs, 1 device set each
-        assert mock_cuda_can_access_peer.call_count == 2
+        # Should check P2P access for each unique pair
+        expected_calls = [
+            mocker.call(0, 1),  # device 0 to device 1
+            mocker.call(1, 0)   # device 1 to device 0
+        ]
+        # Check that can_device_access_peer was called for both directions
+        assert mock_torch.can_device_access_peer.call_count == 2
+        mock_torch.can_device_access_peer.assert_has_calls(expected_calls, any_order=True)
 
     def test_check_p2p_connectivity_multiple_devices_not_connected(self, mocker):
         """Test connectivity check with partially connected devices."""
-        mock_lib = Mock()
-        mock_cuda_get_device_count = Mock(return_value=2)
-        mock_cuda_can_access_peer = Mock()  # One direction returns 0 (not accessible)
-        mock_cuda_set_device = Mock(return_value=0)
-        
-        # First call returns 1 (accessible), second returns 0 (not accessible)
-        mock_cuda_can_access_peer.side_effect = [1, 0]
-        
-        mock_lib.cudaGetDeviceCount = mock_cuda_get_device_count
-        mock_lib.cudaDeviceCanAccessPeer = mock_cuda_can_access_peer
-        mock_lib.cudaSetDevice = mock_cuda_set_device
-        
-        mocker.patch('exllamav3.model.model_tp_cuda._cudart', return_value=mock_lib)
+        # Mock PyTorch CUDA functions
+        mock_torch = mocker.patch('torch.cuda')
+        mock_torch.device_count.return_value = 2
+        # One direction returns False (not accessible)
+        mock_torch.can_device_access_peer.side_effect = [True, False]
         
         result = check_p2p_connectivity([0, 1])
         assert result is False
+        # Should check P2P access for both directions
+        assert mock_torch.can_device_access_peer.call_count == 2
 
     def test_check_p2p_connectivity_cuda_error(self, mocker):
         """Test connectivity check with CUDA API error."""
-        mock_lib = Mock()
-        mock_cuda_get_device_count = Mock(side_effect=RuntimeError("CUDA error"))
-        
-        mock_lib.cudaGetDeviceCount = mock_cuda_get_device_count
-        
-        mocker.patch('exllamav3.model.model_tp_cuda._cudart', return_value=mock_lib)
+        # Mock PyTorch CUDA functions to raise an exception
+        mock_torch = mocker.patch('torch.cuda')
+        mock_torch.device_count.side_effect = RuntimeError("CUDA error")
         
         with pytest.raises(RuntimeError, match="Failed to get device count"):
             check_p2p_connectivity([0, 1])
