@@ -152,8 +152,8 @@ class TestTPBackendP2PInitialization:
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
             mock_shm_instance = Mock()
-            # Mock the buf attribute to return a bytes-like object
-            mock_shm_instance.buf = bytearray(128 * 1024)  # Create actual bytes for buffer
+            # Mock the buf attribute to return bytes-like objects of correct sizes
+            mock_shm_instance.buf = bytearray(17 * 128 * 1024)  # Largest size: reduction buffer (2.25MB)
             mock_shm.return_value = mock_shm_instance
             
             # Mock torch extension functions
@@ -238,8 +238,8 @@ class TestTPBackendP2PInitialization:
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
             mock_shm_instance = Mock()
-            # Mock the buf attribute to return a bytes-like object
-            mock_shm_instance.buf = bytearray(17 * 128 * 1024)  # Create actual bytes for buffer (largest size)
+            # Mock the buf attribute to return bytes-like objects of correct sizes
+            mock_shm_instance.buf = bytearray(17 * 128 * 1024)  # Largest size: reduction buffer (2.25MB)
             mock_shm.return_value = mock_shm_instance
             
             # Mock torch extension functions
@@ -276,8 +276,8 @@ class TestTPBackendP2PInitialization:
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
             mock_shm_instance = Mock()
-            # Mock the buf attribute to return a bytes-like object
-            mock_shm_instance.buf = bytearray(32 * 1024**2)  # Create actual bytes for buffer (32MB)
+            # Mock the buf attribute to return bytes-like objects of correct sizes
+            mock_shm_instance.buf = bytearray(32 * 1024**2)  # Largest size: 32MB buffer (from test parameter)
             mock_shm.return_value = mock_shm_instance
             
             # Mock torch extension functions
