@@ -610,10 +610,12 @@ class TestBackendSelectionLogic:
     @patch('exllamav3.model.model_tp_backend.TPBackendP2P_AVAILABLE', True)
     @patch('exllamav3.model.model_tp_backend.check_p2p_connectivity')
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
-    def test_create_tp_backend_explicit_p2p(self, mock_check_p2p_p2p, mock_check_p2p_backend):
+    @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
+    def test_create_tp_backend_explicit_p2p(self, mock_enable_p2p, mock_check_p2p_p2p, mock_check_p2p_backend):
         """Test explicit P2P backend selection."""
         mock_check_p2p_backend.return_value = True
         mock_check_p2p_p2p.return_value = True
+        mock_enable_p2p.return_value = None
         
         backend = create_tp_backend(
             backend_type="p2p",
