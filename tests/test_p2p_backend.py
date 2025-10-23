@@ -439,6 +439,7 @@ class TestTPBackendP2PMemoryManagement:
         mock_enable_p2p.return_value = None
         
         # Mock shared memory creation
+        created_instances = []
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
             def mock_shared_memory_side_effect(*args, **kwargs):
                 instance = Mock()
@@ -449,6 +450,7 @@ class TestTPBackendP2PMemoryManagement:
                 # Use the largest size among all expected buffers
                 buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
                 instance.buf = bytearray(buffer_size)
+                created_instances.append(instance)
                 return instance
             
             mock_shm.side_effect = mock_shared_memory_side_effect
@@ -471,21 +473,15 @@ class TestTPBackendP2PMemoryManagement:
                     backend.close()
                     
                     # Verify all shared memory buffers are closed
-                    # Since the mock_shm.side_effect creates new instances each time,
-                    # we need to track all instances created and verify they were called
-                    shm_calls = mock_shm.call_args_list
-                    assert len(shm_calls) == 4  # Should create 4 shared memory objects
+                    assert len(created_instances) == 4  # Should create 4 shared memory objects
                     
                     # Check that close was called on each shared memory object
-                    # We need to access the actual instances that were created
-                    for call_args in shm_calls:
-                        shm_instance = call_args[0][0]  # First argument to SharedMemory constructor
+                    for shm_instance in created_instances:
                         shm_instance.close.assert_called_once()
                     
                     # Verify unlink is called for master process
                     if backend.master:
-                        for call_args in shm_calls:
-                            shm_instance = call_args[0][0]  # First argument to SharedMemory constructor
+                        for shm_instance in created_instances:
                             shm_instance.unlink.assert_called_once()
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
