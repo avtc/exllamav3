@@ -111,7 +111,6 @@ class TestTPBackendP2PInitialization:
     def test_initialization_success(self, mock_cuda_register, mock_check_p2p):
         """Test successful P2P backend initialization."""
         mock_check_p2p.return_value = True
-        mock_enable_p2p.return_value = None
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
@@ -192,10 +191,9 @@ class TestTPBackendP2PInitialization:
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
     @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
-    def test_shared_memory_buffer_creation(self, mock_cuda_register, mock_enable_p2p, mock_check_p2p):
+    def test_shared_memory_buffer_creation(self, mock_cuda_register, mock_check_p2p):
         """Test shared memory buffer creation and management."""
         mock_check_p2p.return_value = True
-        mock_enable_p2p.return_value = None
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
@@ -240,7 +238,6 @@ class TestTPBackendP2PInitialization:
     def test_p2p_buffer_allocation(self, mock_cuda_register, mock_check_p2p):
         """Test P2P buffer allocation with appropriate size."""
         mock_check_p2p.return_value = True
-        mock_enable_p2p.return_value = None
         
         # Mock shared memory creation
         with patch('exllamav3.model.model_tp_backend_p2p.shared_memory.SharedMemory') as mock_shm:
@@ -565,7 +562,6 @@ class TestBackendSelectionLogic:
         """Test explicit P2P backend selection."""
         mock_check_p2p_backend.return_value = True
         mock_check_p2p_p2p.return_value = True
-        mock_enable_p2p.return_value = None
         
         # Mock torch tensor creation to avoid CUDA initialization issues
         mock_tensor = Mock()
