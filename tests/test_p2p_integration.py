@@ -133,8 +133,8 @@ def _is_multi_process_environment():
     return False
 
 
-def _run_p2p_test_in_subprocess(device_idx, active_devices, test_func, result_queue):
-    """Run P2P test in a subprocess."""
+def _run_p2p_test_in_subprocess_real_pattern(device_idx, active_devices, test_func, result_queue, backend_args):
+    """Run P2P test in a subprocess following the real tensor parallel pattern."""
     print(f"DEBUG: Subprocess {os.getpid()} starting for device {device_idx}")
     print(f"DEBUG: Subprocess CUDA available before init: {torch.cuda.is_available()}")
     
@@ -152,10 +152,29 @@ def _run_p2p_test_in_subprocess(device_idx, active_devices, test_func, result_qu
         torch.cuda.set_device(device_idx)
         print(f"DEBUG: Subprocess {os.getpid()} successfully set CUDA device")
         
-        # Run the test function
+        # Use the same pattern as real tensor parallel system
+        # Create backend using the factory function
+        from exllamav3.model.model_tp_backend import create_tp_backend
+        
+        backend = create_tp_backend(
+            backend_type=backend_args["type"],
+            device=device_idx,
+            active_devices=active_devices,
+            output_device=active_devices[0],  # First device is output
+            init_method=backend_args["init_method"],
+            master=(device_idx == active_devices[0]),
+            uuid=backend_args["uuid"]
+        )
+        
+        print(f"DEBUG: Subprocess {os.getpid()} backend created successfully")
+        
+        # Run the test function with the backend
         print(f"DEBUG: Subprocess {os.getpid()} executing test function")
-        result = test_func(device_idx, active_devices)
+        result = test_func(device_idx, active_devices, backend)
         print(f"DEBUG: Subprocess {os.getpid()} test completed successfully")
+        
+        # Clean up backend
+        backend.close()
         
         result_queue.put(('success', device_idx, result))
         
@@ -166,21 +185,10 @@ def _run_p2p_test_in_subprocess(device_idx, active_devices, test_func, result_qu
         result_queue.put(('error', device_idx, str(e)))
 
 
-def _create_multi_process_p2p_backend(device_idx, active_devices, uuid_suffix="test"):
-    """Create P2P backend in a multi-process environment."""
-    backend = TPBackendP2P(
-        device=device_idx,
-        active_devices=active_devices,
-        output_device=0,  # All devices communicate to device 0
-        init_method="tcp://127.0.0.1:29500",
-        master=(device_idx == 0),
-        uuid=f"test_multiprocess_{uuid_suffix}"
-    )
-    return backend
 
 
 def run_p2p_test_multi_process(test_func, devices=None):
-    """Run P2P test with proper multi-process setup."""
+    """Run P2P test with proper multi-process setup following the real tensor parallel pattern."""
     print("DEBUG: Starting multi-process P2P test")
     print(f"DEBUG: Current multiprocessing start method: {mp.get_start_method()}")
     print(f"DEBUG: Parent process CUDA available: {torch.cuda.is_available()}")
@@ -196,22 +204,22 @@ def run_p2p_test_multi_process(test_func, devices=None):
     result_queue = mp.Queue()
     processes = []
     
-    # Create the master backend in parent process first
-    print(f"DEBUG: Creating master backend in parent process")
-    master_backend = None
+    # Use the same pattern as real tensor parallel system
+    # Create backend args like the real system does
+    import uuid
+    backend_args = {
+        "type": "p2p",
+        "init_method": "tcp://127.0.0.1:29500",
+        "uuid": uuid.uuid4().hex,
+    }
+    
     try:
-        master_backend = _create_multi_process_p2p_backend(devices[0], devices[:2], "all_reduce")
-        print(f"DEBUG: Master backend created successfully")
-        
-        # Give child processes time to start and connect to shared memory
-        time.sleep(1)
-        
-        # Start worker processes for each device
+        # Start worker processes for each device (like the real system)
         for i, device_idx in enumerate(devices[:2]):  # Limit to 2 devices for testing
             print(f"DEBUG: Creating process for device {device_idx}")
             p = mp.Process(
-                target=_run_p2p_test_in_subprocess,
-                args=(device_idx, devices[:2], test_func, result_queue)
+                target=_run_p2p_test_in_subprocess_real_pattern,
+                args=(device_idx, devices[:2], test_func, result_queue, backend_args)
             )
             processes.append(p)
             p.start()
@@ -241,14 +249,8 @@ def run_p2p_test_multi_process(test_func, devices=None):
         return results
         
     finally:
-        # Clean up master backend AFTER all processes have finished
-        if master_backend is not None:
-            try:
-                print(f"DEBUG: Cleaning up master backend")
-                master_backend.close()
-                print(f"DEBUG: Master backend cleaned up successfully")
-            except Exception as e:
-                print(f"DEBUG: Error closing master backend: {e}")
+        # No manual backend cleanup needed - each process cleans up its own backend
+        pass
 
 
 class TestP2PCommunicationOperations:
@@ -300,11 +302,8 @@ class TestP2PCommunicationOperations:
     @staticmethod
     def _test_all_reduce_worker(device_idx, active_devices, backend=None):
         """Worker function for all-reduce test."""
-        if backend is None:
-            backend = _create_multi_process_p2p_backend(device_idx, active_devices, "all_reduce")
-            should_close = True
-        else:
-            should_close = False
+        # Backend is now passed from the caller (following real tensor parallel pattern)
+        should_close = False  # Don't close backend here - caller handles it
         
         try:
             # Create test tensor
@@ -370,10 +369,8 @@ class TestP2PCommunicationOperations:
             if len(devices) < 2:
                 pytest.skip("Need at least 2 P2P-capable devices")
             
-            def test_broadcast_worker(device_idx, active_devices):
+            def test_broadcast_worker(device_idx, active_devices, backend):
                 """Worker function for broadcast test."""
-                backend = _create_multi_process_p2p_backend(device_idx, active_devices, "broadcast")
-                
                 try:
                     # Create test tensor
                     tensor = torch.randn(1000, device=device_idx)
@@ -428,10 +425,8 @@ class TestP2PCommunicationOperations:
             if len(devices) < 2:
                 pytest.skip("Need at least 2 P2P-capable devices")
             
-            def test_gather_worker(device_idx, active_devices):
+            def test_gather_worker(device_idx, active_devices, backend):
                 """Worker function for gather test."""
-                backend = _create_multi_process_p2p_backend(device_idx, active_devices, "gather")
-                
                 try:
                     # Create test tensor
                     tensor_size = 500
@@ -452,7 +447,7 @@ class TestP2PCommunicationOperations:
                         # Non-master devices just need to participate in gather
                         backend.gather(tensor, None, None, 0, [tensor_size] * len(active_devices))
                         return f"Device {device_idx}: gather completed successfully"
-                    
+                
                 finally:
                     backend.close()
             
@@ -478,10 +473,8 @@ class TestP2PCommunicationOperations:
             if len(devices) < 2:
                 pytest.skip("Need at least 2 P2P-capable devices")
             
-            def test_barrier_worker(device_idx, active_devices):
+            def test_barrier_worker(device_idx, active_devices, backend):
                 """Worker function for barrier test."""
-                backend = _create_multi_process_p2p_backend(device_idx, active_devices, "barrier")
-                
                 try:
                     # Perform barrier operation
                     backend.fwd_barrier()
