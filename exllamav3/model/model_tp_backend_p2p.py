@@ -125,6 +125,10 @@ class TPBackendP2P(TPBackend):
             log_tp(device, f"Failed to enable P2P access: {e}")
             raise RuntimeError(f"Failed to enable P2P access: {e}")
         
+        # P2P context management
+        self.p2p_context = None
+        self.p2p_initialized = False
+        
         # P2P-specific buffers
         self.p2p_buffer = None
         self.p2p_buffer_size = max(1024 * 1024, shbuf_size // 4)  # 1MB minimum or shbuf_size/4
@@ -140,10 +144,6 @@ class TPBackendP2P(TPBackend):
         
         # Initialize P2P context
         self._init_p2p_context()
-        
-        # P2P context management
-        self.p2p_context = None
-        self.p2p_initialized = False
     
     def _init_shmem_buffers(self):
         """Initialize shared memory buffers for P2P communication."""
