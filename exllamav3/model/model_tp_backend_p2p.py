@@ -492,6 +492,41 @@ class TPBackendP2P(TPBackend):
             # This is not the output device - send to output device using P2P
             self._p2p_send_to_output(tensor, out_device)
     
+    def _p2p_send_to_output(self, tensor: torch.Tensor, out_device: int):
+        """
+        P2P send operation to send tensor from current device to output device.
+        
+        This method is called when the current device is not the output device
+        during a gather operation. It uses the P2P gather kernel to handle
+        the sending side of the communication.
+        
+        Args:
+            tensor: Tensor to send (from current device)
+            out_device: Target device ID where the tensor should be sent
+            
+        Note:
+            - Uses the P2P gather kernel which handles both send and receive sides
+            - Operates through shared memory buffers for coordination
+            - Automatically manages device context and error handling
+        """
+        # Use P2P gather for sending - the kernel handles the producer side
+        device_list = self.active_devices
+        abort_flag = torch.zeros((1,), device=self.device, dtype=torch.int32)
+        
+        # For sending, we pass None as out_tensor since we're not receiving
+        ext.pg_gather_full_p2p(
+            self.p2p_context,
+            device_list,
+            self.device,
+            out_device,
+            tensor,
+            None,  # No output tensor when sending
+            [tensor.size(-1)],  # Local dimensions (just this device's size)
+            self.ptr_b,
+            self.shbuf_size,
+            abort_flag
+        )
+    
     def _p2p_gather(self, tensor: torch.Tensor, out_tensor: torch.Tensor, 
                    gather_devices: torch.Tensor, ldims: list[int]):
         """P2P-optimized gather implementation."""
