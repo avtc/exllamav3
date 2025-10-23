@@ -121,7 +121,8 @@ class TestTPBackendP2PInitialization:
                 size = kwargs.get('size', args[0] if len(args) > 0 else 0)
                 
                 # Use the largest size among all expected buffers
-                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+                buffer_size = max(size, 16 * 1024 * 1024)  # At least 16MB
                 instance.buf = bytearray(buffer_size)
                 return instance
             
@@ -202,7 +203,8 @@ class TestTPBackendP2PInitialization:
                 size = kwargs.get('size', args[0] if len(args) > 0 else 0)
                 
                 # Use the largest size among all expected buffers
-                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+                buffer_size = max(size, 16 * 1024 * 1024)  # At least 16MB
                 instance.buf = bytearray(buffer_size)
                 return instance
             
@@ -245,8 +247,9 @@ class TestTPBackendP2PInitialization:
                 name = kwargs.get('name', args[1] if len(args) > 1 else '')
                 size = kwargs.get('size', args[0] if len(args) > 0 else 0)
                 
-                # Use the largest size among all expected buffers (32MB from test parameter)
-                buffer_size = max(size, 32 * 1024**2)  # At least 32MB
+                # Use the largest size among all expected buffers
+                # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+                buffer_size = max(size, 32 * 1024**2)  # At least 32MB (keep larger for this specific test)
                 instance.buf = bytearray(buffer_size)
                 return instance
             
@@ -292,7 +295,8 @@ class TestTPBackendP2PMemoryManagement:
                 size = kwargs.get('size', args[0] if len(args) > 0 else 0)
                 
                 # Use the largest size among all expected buffers
-                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+                buffer_size = max(size, 16 * 1024 * 1024)  # At least 16MB
                 instance.buf = bytearray(buffer_size)
                 return instance
             
@@ -337,7 +341,8 @@ class TestTPBackendP2PMemoryManagement:
                 size = kwargs.get('size', args[0] if len(args) > 0 else 0)
                 
                 # Use the largest size among all expected buffers
-                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+                buffer_size = max(size, 16 * 1024 * 1024)  # At least 16MB
                 instance.buf = bytearray(buffer_size)
                 return instance
             
@@ -390,7 +395,8 @@ class TestTPBackendP2PMemoryManagement:
                 size = kwargs.get('size', args[0] if len(args) > 0 else 0)
                 
                 # Use the largest size among all expected buffers
-                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+                buffer_size = max(size, 16 * 1024 * 1024)  # At least 16MB
                 instance.buf = bytearray(buffer_size)
                 created_instances.append(instance)
                 return instance
@@ -441,7 +447,8 @@ class TestTPBackendP2PMemoryManagement:
                 size = kwargs.get('size', args[0] if len(args) > 0 else 0)
                 
                 # Use the largest size among all expected buffers
-                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+                buffer_size = max(size, 16 * 1024 * 1024)  # At least 16MB
                 instance.buf = bytearray(buffer_size)
                 return instance
             
@@ -515,7 +522,19 @@ class TestBackendSelectionLogic:
         # Mock shared memory creation to avoid real shared memory operations
         def mock_shared_memory_side_effect(*args, **kwargs):
             instance = Mock()
-            instance.buf = bytearray(1024 * 1024)  # 1MB buffer
+            # Determine buffer size based on parameters to match actual requirements
+            size = kwargs.get('size', args[0] if len(args) > 0 else 0)
+            name = kwargs.get('name', args[1] if len(args) > 1 else '')
+            
+            # Use the requested size or provide a sufficiently large buffer
+            # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+            if size >= 16 * 1024 * 1024:  # 16MB or larger
+                buffer_size = size
+            else:
+                # For smaller buffers, ensure we have enough space
+                buffer_size = max(size, 16 * 1024 * 1024)  # At least 16MB
+            
+            instance.buf = bytearray(buffer_size)
             return instance
         mock_shm.side_effect = mock_shared_memory_side_effect
         
@@ -574,7 +593,19 @@ class TestBackendSelectionLogic:
         # Mock shared memory creation to avoid real shared memory operations
         def mock_shared_memory_side_effect(*args, **kwargs):
             instance = Mock()
-            instance.buf = bytearray(1024 * 1024)  # 1MB buffer
+            # Determine buffer size based on parameters to match actual requirements
+            size = kwargs.get('size', args[0] if len(args) > 0 else 0)
+            name = kwargs.get('name', args[1] if len(args) > 1 else '')
+            
+            # Use the requested size or provide a sufficiently large buffer
+            # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+            if size >= 16 * 1024 * 1024:  # 16MB or larger
+                buffer_size = size
+            else:
+                # For smaller buffers, ensure we have enough space
+                buffer_size = max(size, 16 * 1024 * 1024)  # At least 16MB
+            
+            instance.buf = bytearray(buffer_size)
             return instance
         mock_shm.side_effect = mock_shared_memory_side_effect
         
@@ -690,7 +721,8 @@ class TestP2PBackendCommunicationPrimitives:
                 size = kwargs.get('size', args[0] if len(args) > 0 else 0)
                 
                 # Use the largest size among all expected buffers
-                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+                buffer_size = max(size, 16 * 1024 * 1024)  # At least 16MB
                 instance.buf = bytearray(buffer_size)
                 return instance
             
@@ -738,7 +770,8 @@ class TestP2PBackendCommunicationPrimitives:
                 size = kwargs.get('size', args[0] if len(args) > 0 else 0)
                 
                 # Use the largest size among all expected buffers
-                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+                buffer_size = max(size, 16 * 1024 * 1024)  # At least 16MB
                 instance.buf = bytearray(buffer_size)
                 return instance
             
@@ -786,7 +819,8 @@ class TestP2PBackendCommunicationPrimitives:
                 size = kwargs.get('size', args[0] if len(args) > 0 else 0)
                 
                 # Use the largest size among all expected buffers
-                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+                buffer_size = max(size, 16 * 1024 * 1024)  # At least 16MB
                 instance.buf = bytearray(buffer_size)
                 return instance
             
@@ -835,7 +869,8 @@ class TestP2PBackendCommunicationPrimitives:
                 size = kwargs.get('size', args[0] if len(args) > 0 else 0)
                 
                 # Use the largest size among all expected buffers
-                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+                buffer_size = max(size, 16 * 1024 * 1024)  # At least 16MB
                 instance.buf = bytearray(buffer_size)
                 return instance
             
@@ -888,7 +923,8 @@ class TestP2PBackendCommunicationPrimitives:
                 size = kwargs.get('size', args[0] if len(args) > 0 else 0)
                 
                 # Use the largest size among all expected buffers
-                buffer_size = max(size, 17 * 128 * 1024)  # At least 2.25MB
+                # The main buffer (shm_b) needs to be at least SHBUF_SIZE (16MB)
+                buffer_size = max(size, 16 * 1024 * 1024)  # At least 16MB
                 instance.buf = bytearray(buffer_size)
                 return instance
             

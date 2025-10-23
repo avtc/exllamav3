@@ -190,6 +190,16 @@ class TPBackendP2P(TPBackend):
         
         # Create local tensors from shared memory
         def get_local_tensor(shm_buf, buffer_size):
+            # Add diagnostic logging to identify buffer size issues
+            actual_buffer_size = len(shm_buf) if hasattr(shm_buf, '__len__') else 0
+            log_tp(self.device, f"Creating tensor: requested_size={buffer_size}, actual_buffer_size={actual_buffer_size}")
+            
+            if actual_buffer_size < buffer_size:
+                raise TypeError(
+                    f"Buffer is too small for requested array. "
+                    f"Requested: {buffer_size} bytes, Available: {actual_buffer_size} bytes"
+                )
+            
             np_view = np.ndarray(
                 shape=(buffer_size,),
                 dtype=np.uint8,
