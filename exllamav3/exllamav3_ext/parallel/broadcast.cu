@@ -382,7 +382,8 @@ void pg_broadcast_full_p2p_kernel
             if (t == 0)
             {
                 // Signal stage completion
-                atomicAdd(&ctx->broadcast_stage_device[this_device], 1);
+                int this_rank = __popc(device_mask & ((1 << this_device) - 1));
+                atomicAdd(&ctx->broadcast_stage_device[this_rank], 1);
             }
             __syncthreads();
         }
@@ -397,7 +398,8 @@ void pg_broadcast_full_p2p_kernel
             // Wait for producer to complete this stage
             if (t == 0)
             {
-                while (ctx->broadcast_stage_device[src_device] <= stage && !(*abort_flag))
+                int src_rank = __popc(device_mask & ((1 << src_device) - 1));
+                while (ctx->broadcast_stage_device[src_rank] <= stage && !(*abort_flag))
                 {
                     // Wait loop
                 }
@@ -422,7 +424,8 @@ void pg_broadcast_full_p2p_kernel
     // Final barrier to ensure all devices have received the data
     if (t == 0)
     {
-        atomicExch(&ctx->broadcast_stage_device[this_device], 0);
+        int this_rank = __popc(device_mask & ((1 << this_device) - 1));
+        atomicExch(&ctx->broadcast_stage_device[this_rank], 0);
     }
 }
 

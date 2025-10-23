@@ -79,7 +79,8 @@ void pg_barrier_full_p2p_kernel
     // Each device increments its own epoch counter
     if (t == 0)
     {
-        atomicAdd(&ctx->barrier_epoch_device[this_device], 1);
+        int this_rank = __popc(device_mask & ((1 << this_device) - 1));
+        atomicAdd(&ctx->barrier_epoch_device[this_rank], 1);
     }
     __syncthreads();
     
@@ -87,7 +88,8 @@ void pg_barrier_full_p2p_kernel
     uint32_t max_epoch = 0;
     for (int i = 0; i < num_devices; ++i)
     {
-        uint32_t epoch = ctx->barrier_epoch_device[peer_devices[i]];
+        int peer_rank = __popc(device_mask & ((1 << peer_devices[i]) - 1));
+        uint32_t epoch = ctx->barrier_epoch_device[peer_rank];
         if (epoch > max_epoch)
             max_epoch = epoch;
     }
@@ -114,7 +116,8 @@ void pg_barrier_full_p2p_kernel
     // Reset local epoch counters for next barrier
     if (t == 0)
     {
-        ctx->barrier_epoch_device[this_device] = 0;
+        int this_rank = __popc(device_mask & ((1 << this_device) - 1));
+        ctx->barrier_epoch_device[this_rank] = 0;
         __threadfence_system();
     }
     

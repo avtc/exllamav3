@@ -399,7 +399,10 @@ void pg_all_reduce_full_p2p_kernel
             {
                 __shared__ uint32_t sr;
                 if (t == 0)
-                    sr = (int) ldg_acquire_sys_u32(ctx->reduce_stage_produced + prev_device);
+                {
+                    int prev_rank = (this_rank + num_ranks - 1) % num_ranks;
+                    sr = (int) ldg_acquire_sys_u32(ctx->reduce_stage_produced + prev_rank);
+                }
                 __syncthreads();
                 uint32_t stage_ready_val = sr;
 
@@ -436,7 +439,7 @@ void pg_all_reduce_full_p2p_kernel
                     }
                     if (t == 0)
                     {
-                        stg_release_sys_u32(ctx->reduce_stage_consumed + this_device, stage_recv);
+                        stg_release_sys_u32(ctx->reduce_stage_consumed + this_rank, stage_recv);
                     }
                 }
                 else
@@ -455,7 +458,7 @@ void pg_all_reduce_full_p2p_kernel
             while (stage_send < stage_end)
             {
                 bool ready_send = stage_send < stage_end &&
-                                  (no_overflow || stage_ready(ctx->reduce_stage_consumed + next_device, stage_send - num_buf_stages + 1 + BATCH_STAGE_P2P));
+                                  (no_overflow || stage_ready(ctx->reduce_stage_consumed + ((this_rank + 1) % num_ranks), stage_send - num_buf_stages + 1 + BATCH_STAGE_P2P));
                 if (ready_send)
                 {
                     for (int i = 0; i < BATCH_STAGE_P2P && stage_send < stage_end; ++i)
@@ -471,7 +474,7 @@ void pg_all_reduce_full_p2p_kernel
 
                     if (t == 0)
                     {
-                        stg_release_sys_u32(ctx->reduce_stage_produced + this_device, stage_send);
+                        stg_release_sys_u32(ctx->reduce_stage_produced + this_rank, stage_send);
                     }
                 }
                 else
@@ -484,7 +487,8 @@ void pg_all_reduce_full_p2p_kernel
             }
 
             // Wait for destination to finish receiving
-            wait_min_stage(ctx->reduce_stage_consumed + next_device, stage_end, deadline);
+            int next_rank = (this_rank + 1) % num_ranks;
+            wait_min_stage(ctx->reduce_stage_consumed + next_rank, stage_end, deadline);
         }
 
         if (*abort_flag) break;
@@ -496,8 +500,9 @@ void pg_all_reduce_full_p2p_kernel
 
     if (t == 0)
     {
-        ctx->reduce_stage_consumed[next_device] = 0;
-        ctx->reduce_stage_produced[this_device] = 0;
+        int next_rank = (this_rank + 1) % num_ranks;
+        ctx->reduce_stage_consumed[next_rank] = 0;
+        ctx->reduce_stage_produced[this_rank] = 0;
         __threadfence_system();
     }
 }
