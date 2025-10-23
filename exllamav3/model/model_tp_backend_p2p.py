@@ -245,10 +245,39 @@ class TPBackendP2P(TPBackend):
             log_tp(self.device, f"About to init P2P context with devices: {device_list}")
             log_tp(self.device, f"P2P buffer size: {self.p2p_buffer_size}")
             
-            # Initialize P2P context
-            self.p2p_context = ext.init_p2p_context(device_list, self.p2p_buffer_size)
+            # For multi-process P2P, only the master should create the context
+            # Other processes should connect to the existing context
+            if self.master:
+                # Master process creates the P2P context
+                self.p2p_context = ext.init_p2p_context(device_list, self.p2p_buffer_size)
+                log_tp(self.device, f"Master created P2P context: {self.p2p_context}")
+                
+                # Store the context pointer in shared memory for other processes to access
+                context_ptr_array = np.array([self.p2p_context], dtype=np.uint64)
+                self.tensor_g[:8] = torch.from_numpy(context_ptr_array).to(self.tensor_g.device)
+                log_tp(self.device, f"Stored P2P context pointer in shared memory")
+                
+            else:
+                # Slave processes wait for master to create context and then retrieve it
+                log_tp(self.device, f"Slave waiting for P2P context from master")
+                
+                # Wait for master to store the context pointer
+                deadline = time.time() + 10  # 10 second timeout
+                while time.time() < deadline:
+                    context_ptr_array = self.tensor_g[:8].cpu().numpy().astype(np.uint64)
+                    context_ptr = context_ptr_array[0]
+                    
+                    if context_ptr != 0:
+                        self.p2p_context = context_ptr
+                        log_tp(self.device, f"Slave retrieved P2P context: {self.p2p_context}")
+                        break
+                    
+                    time.sleep(0.1)
+                
+                if self.p2p_context == 0:
+                    raise TimeoutError("Timeout waiting for master process to create P2P context")
             
-            # Check if context was created successfully
+            # Check if context was created/retrieved successfully
             if self.p2p_context == 0:
                 raise RuntimeError("P2P context initialization returned null pointer")
                 
