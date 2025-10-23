@@ -322,10 +322,54 @@ void p2p_device_barrier(
         return;
     }
     
-    // Two-phase barrier implementation using CUDA events
-    static cudaEvent_t barrier_events[64][64];  // events[device][target_device]
+    // Shared synchronization structures for tree reduction
+    struct BarrierSyncData {
+        uint32_t phase_flags[64];  // Flags for each device's phase completion
+        uint32_t tree_level;       // Current tree level
+        uint32_t barrier_active;   // Flag indicating barrier is active
+        uint32_t padding[61];      // Padding to cache line size
+    };
+    
+    // P2P accessible synchronization data
+    static BarrierSyncData* g_barrier_sync_data[64] = {nullptr};  // One per device
+    static bool sync_data_initialized = false;
+    static std::mutex sync_data_mutex;
+    
+    // Event storage for inter-device synchronization
+    static cudaEvent_t inter_device_events[64][64];  // events[source][target]
     static bool events_initialized = false;
     static std::mutex events_mutex;
+    
+    // Initialize synchronization data on first call
+    if (!sync_data_initialized) {
+        std::lock_guard<std::mutex> lock(sync_data_mutex);
+        if (!sync_data_initialized) {
+            // Get actual device count
+            int actual_device_count = 0;
+            cudaError_t result = cudaGetDeviceCount(&actual_device_count);
+            if (result != cudaSuccess) {
+                actual_device_count = 8;  // Default fallback
+            }
+            
+            // Allocate P2P accessible memory for synchronization data
+            for (int dev = 0; dev < 64; dev++) {
+                if (dev < actual_device_count) {
+                    const at::cuda::OptionalCUDAGuard guard(dev);
+                    cudaError_t alloc_result = cudaMalloc(&g_barrier_sync_data[dev], sizeof(BarrierSyncData));
+                    if (alloc_result == cudaSuccess) {
+                        // Initialize the synchronization data
+                        cudaMemset(g_barrier_sync_data[dev], 0, sizeof(BarrierSyncData));
+                    } else {
+                        printf("WARNING: Failed to allocate sync data for device %d\n", dev);
+                        g_barrier_sync_data[dev] = nullptr;
+                    }
+                } else {
+                    g_barrier_sync_data[dev] = nullptr;
+                }
+            }
+            sync_data_initialized = true;
+        }
+    }
     
     // Initialize events on first call
     if (!events_initialized) {
@@ -333,7 +377,7 @@ void p2p_device_barrier(
         if (!events_initialized) {
             for (int dev = 0; dev < 64; dev++) {
                 for (int target = 0; target < 64; target++) {
-                    barrier_events[dev][target] = nullptr;
+                    inter_device_events[dev][target] = nullptr;
                 }
             }
             events_initialized = true;
@@ -406,13 +450,44 @@ void p2p_device_barrier(
         if (!peer_devices.empty()) {
             int peer_device = peer_devices[0];
             
-            // Wait for peer device (simplified - in real implementation would use shared events)
-            // For now, we'll use a combination of local sync and peer access checks
-            result = cudaDeviceSynchronize();
-            if (result != cudaSuccess) {
-                printf("ERROR: Peer synchronization failed for device %d: %s\n",
-                       this_device, cudaGetErrorString(result));
-                *abort_flag_ptr = 1;
+            // Wait for peer device using shared event mechanism
+            if (g_barrier_sync_data[this_device] && g_barrier_sync_data[peer_device]) {
+                // Use P2P memory for synchronization flags
+                volatile uint32_t* peer_flag = &g_barrier_sync_data[peer_device]->phase_flags[this_device];
+                volatile uint32_t* my_flag = &g_barrier_sync_data[this_device]->phase_flags[peer_device];
+                
+                // Set our flag to indicate we're ready
+                *my_flag = 1;
+                
+                // Wait for peer to set their flag
+                const int max_wait_cycles = 1000000;  // Prevent infinite loops
+                int wait_cycles = 0;
+                while (*peer_flag == 0 && wait_cycles < max_wait_cycles) {
+                    // Use CUDA event for efficient waiting
+                    cudaEvent_t wait_event;
+                    if (cudaEventCreateWithFlags(&wait_event, cudaEventDisableTiming) == cudaSuccess) {
+                        cudaEventRecord(wait_event, 0);
+                        cudaEventSynchronize(wait_event);
+                        cudaEventDestroy(wait_event);
+                    }
+                    wait_cycles++;
+                }
+                
+                if (wait_cycles >= max_wait_cycles) {
+                    printf("WARNING: Timeout waiting for peer device %d\n", peer_device);
+                    *abort_flag_ptr = 1;
+                }
+                
+                // Reset flags for next barrier
+                *my_flag = 0;
+            } else {
+                // Fallback to regular synchronization
+                result = cudaDeviceSynchronize();
+                if (result != cudaSuccess) {
+                    printf("ERROR: Peer synchronization failed for device %d: %s\n",
+                           this_device, cudaGetErrorString(result));
+                    *abort_flag_ptr = 1;
+                }
             }
         }
     } else {
@@ -477,9 +552,39 @@ void p2p_device_barrier(
                     if (result == cudaSuccess) {
                         result = cudaEventRecord(leaf_event, 0);
                         if (result == cudaSuccess) {
-                            // In a real implementation, we would share this event with the parent
-                            // For now, we'll use a simplified approach with device synchronization
-                            result = cudaDeviceSynchronize();
+                            // Share event with parent device using P2P memory
+                            if (g_barrier_sync_data[this_device] && g_barrier_sync_data[parent_device]) {
+                                // Store event pointer in shared memory for parent to access
+                                // Note: In a real implementation, we'd need IPC mechanisms
+                                // For now, we'll use the phase flags as a simple signaling mechanism
+                                
+                                volatile uint32_t* parent_signal = &g_barrier_sync_data[parent_device]->phase_flags[this_device];
+                                *parent_signal = 1;  // Signal parent we're ready
+                                
+                                // Wait for parent acknowledgment
+                                volatile uint32_t* parent_ack = &g_barrier_sync_data[this_device]->phase_flags[parent_device];
+                                const int max_wait = 100000;
+                                int wait_count = 0;
+                                while (*parent_ack == 0 && wait_count < max_wait) {
+                                    // Efficient wait using CUDA events
+                                    cudaEvent_t wait_event;
+                                    if (cudaEventCreateWithFlags(&wait_event, cudaEventDisableTiming) == cudaSuccess) {
+                                        cudaEventRecord(wait_event, 0);
+                                        cudaEventSynchronize(wait_event);
+                                        cudaEventDestroy(wait_event);
+                                    }
+                                    wait_count++;
+                                }
+                                
+                                // Clean up signals
+                                *parent_signal = 0;
+                                if (wait_count >= max_wait) {
+                                    printf("WARNING: Parent acknowledgment timeout for device %d\n", this_device);
+                                }
+                            } else {
+                                // Fallback to device synchronization
+                                result = cudaDeviceSynchronize();
+                            }
                         }
                         cudaEventDestroy(leaf_event);
                     }
@@ -521,8 +626,36 @@ void p2p_device_barrier(
                     if (result == cudaSuccess) {
                         result = cudaEventRecord(internal_event, 0);
                         if (result == cudaSuccess) {
-                            // Wait for parent's acknowledgment (simplified)
-                            result = cudaDeviceSynchronize();
+                            // Wait for parent's acknowledgment using P2P signaling
+                            if (g_barrier_sync_data[this_device] && g_barrier_sync_data[parent_device]) {
+                                volatile uint32_t* parent_signal = &g_barrier_sync_data[parent_device]->phase_flags[this_device];
+                                volatile uint32_t* parent_ack = &g_barrier_sync_data[this_device]->phase_flags[parent_device];
+                                
+                                // Signal parent we're ready at this level
+                                *parent_signal = 1;
+                                
+                                // Wait for parent acknowledgment
+                                const int max_wait = 100000;
+                                int wait_count = 0;
+                                while (*parent_ack == 0 && wait_count < max_wait) {
+                                    cudaEvent_t wait_event;
+                                    if (cudaEventCreateWithFlags(&wait_event, cudaEventDisableTiming) == cudaSuccess) {
+                                        cudaEventRecord(wait_event, 0);
+                                        cudaEventSynchronize(wait_event);
+                                        cudaEventDestroy(wait_event);
+                                    }
+                                    wait_count++;
+                                }
+                                
+                                *parent_signal = 0;  // Clean up
+                                if (wait_count >= max_wait) {
+                                    printf("WARNING: Internal node acknowledgment timeout for device %d at level %d\n",
+                                           this_device, current_level);
+                                }
+                            } else {
+                                // Fallback synchronization
+                                result = cudaDeviceSynchronize();
+                            }
                         }
                         cudaEventDestroy(internal_event);
                     }
@@ -563,16 +696,37 @@ void p2p_device_barrier(
             if (result == cudaSuccess) {
                 result = cudaEventRecord(broadcast_event, 0);
                 
-                // Broadcast to children (simplified - in real implementation would share events)
-                for (int child_rank = 1; child_rank < num_devices; child_rank++) {
-                    int child_device = (int)devices[child_rank];
+                // Broadcast completion to children using P2P signaling
+                if (g_barrier_sync_data[this_device]) {
+                    // Set broadcast flag for all children
+                    for (int child_rank = 1; child_rank < num_devices; child_rank++) {
+                        int child_device = (int)devices[child_rank];
+                        
+                        // Check if we can access child device
+                        int can_access_child = 0;
+                        cudaError_t access_result = cudaDeviceCanAccessPeer(&can_access_child, this_device, child_device);
+                        
+                        if (access_result == cudaSuccess && can_access_child && g_barrier_sync_data[child_device]) {
+                            // Signal child that barrier is complete
+                            volatile uint32_t* child_signal = &g_barrier_sync_data[child_device]->phase_flags[this_device];
+                            *child_signal = 1;
+                            
+                            // Optional: Wait for child acknowledgment (not strictly necessary for broadcast)
+                            // volatile uint32_t* child_ack = &g_barrier_sync_data[this_device]->phase_flags[child_device];
+                            // const int ack_wait = 10000;
+                            // int ack_count = 0;
+                            // while (*child_ack == 0 && ack_count < ack_wait) {
+                            //     ack_count++;
+                            // }
+                        }
+                    }
                     
-                    // Check if we can access child device
-                    int can_access_child = 0;
-                    cudaError_t access_result = cudaDeviceCanAccessPeer(&can_access_child, this_device, child_device);
-                    
-                    if (access_result == cudaSuccess && can_access_child) {
-                        // P2P access is handled by PyTorch automatically
+                    // Give children time to receive the signal
+                    cudaEvent_t broadcast_delay;
+                    if (cudaEventCreateWithFlags(&broadcast_delay, cudaEventDisableTiming) == cudaSuccess) {
+                        cudaEventRecord(broadcast_delay, 0);
+                        cudaEventSynchronize(broadcast_delay);
+                        cudaEventDestroy(broadcast_delay);
                     }
                 }
                 
@@ -587,9 +741,35 @@ void p2p_device_barrier(
             result = cudaDeviceCanAccessPeer(&can_access_root, this_device, root_device);
             
             if (result == cudaSuccess && can_access_root) {
-                // P2P access is handled by PyTorch automatically
-                // Wait for root's broadcast (simplified)
-                result = cudaDeviceSynchronize();
+                // Wait for root's broadcast using P2P signaling
+                if (g_barrier_sync_data[this_device] && g_barrier_sync_data[root_device]) {
+                    volatile uint32_t* root_broadcast = &g_barrier_sync_data[this_device]->phase_flags[root_device];
+                    
+                    // Wait for root broadcast signal
+                    const int max_wait = 100000;
+                    int wait_count = 0;
+                    while (*root_broadcast == 0 && wait_count < max_wait) {
+                        // Efficient wait using CUDA events
+                        cudaEvent_t wait_event;
+                        if (cudaEventCreateWithFlags(&wait_event, cudaEventDisableTiming) == cudaSuccess) {
+                            cudaEventRecord(wait_event, 0);
+                            cudaEventSynchronize(wait_event);
+                            cudaEventDestroy(wait_event);
+                        }
+                        wait_count++;
+                    }
+                    
+                    if (wait_count >= max_wait) {
+                        printf("WARNING: Root broadcast timeout for device %d\n", this_device);
+                        *abort_flag_ptr = 1;
+                    }
+                    
+                    // Clear the broadcast signal
+                    *root_broadcast = 0;
+                } else {
+                    // Fallback synchronization
+                    result = cudaDeviceSynchronize();
+                }
             } else {
                 // Fallback synchronization
                 result = cudaDeviceSynchronize();
@@ -616,13 +796,22 @@ void p2p_device_barrier(
                 int peer_device = (int)devices[i];
                 if (peer_device == this_device) continue;
                 
-                // Simple check - in a real implementation would use shared flags
-                int can_access = 0;
-                result = cudaDeviceCanAccessPeer(&can_access, this_device, peer_device);
-                
-                if (result != cudaSuccess) {
-                    all_synced = false;
-                    break;
+                // Check synchronization status using shared flags
+                if (g_barrier_sync_data[this_device] && g_barrier_sync_data[peer_device]) {
+                    volatile uint32_t* sync_status = &g_barrier_sync_data[peer_device]->phase_flags[this_device];
+                    if (*sync_status != 0) {
+                        // Device is still in synchronization phase
+                        all_synced = false;
+                    }
+                } else {
+                    // Fallback check using P2P capability
+                    int can_access = 0;
+                    result = cudaDeviceCanAccessPeer(&can_access, this_device, peer_device);
+                    
+                    if (result != cudaSuccess) {
+                        all_synced = false;
+                        break;
+                    }
                 }
             }
             
