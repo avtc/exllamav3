@@ -38,6 +38,14 @@ void p2p_gather_kernel
     int t = threadIdx.x;
     auto grid = cg::this_grid();
     
+    // Reset synchronization flags for this device
+    if (t == 0)
+    {
+        atomicExch(&ctx->gather_stage_produced[this_device], 0);
+        atomicExch(&ctx->gather_stage_consumed[this_device], 0);
+    }
+    __syncthreads();
+    
     uint8_t* data_end = data_ptr + (all_offsets[this_device + 1] - all_offsets[this_device]) * batch;
     
     // Divide shared buffer among ranks
@@ -60,6 +68,17 @@ void p2p_gather_kernel
         {
             const int src_device = __ffs(pending) - 1;
             pending &= (pending - 1);
+            
+            // Wait for producer to set data ready flag (except for our own device)
+            if (src_device != this_device)
+            {
+                uint64_t deadline = sync_deadline();
+                while (ldg_acquire_sys_u32(&ctx->gather_stage_produced[src_device]) == 0 && !(*abort_flag))
+                {
+                    if (check_timeout(ctx, deadline, "p2p_gather consumer")) break;
+                    __nanosleep(SYNC_MIN_SLEEP);
+                }
+            }
             
             if (src_device == this_device)
             {
@@ -106,11 +125,33 @@ void p2p_gather_kernel
                     }
                 }
             }
+            
+            // Signal that data from this source has been consumed
+            if (src_device != this_device)
+            {
+                __threadfence();
+                stg_release_sys_u32(&ctx->gather_stage_consumed[src_device], 1);
+            }
         }
     }
     
-    // Producer - nothing to do, data is accessed directly by consumers
-    // In a real implementation, we might need to ensure data is ready
+    // Producer - set data ready flag for this device
+    if (!is_consumer)
+    {
+        // Ensure all memory writes are visible before setting the flag
+        __threadfence();
+        
+        // Set the produced flag for this device using release semantics
+        stg_release_sys_u32(&ctx->gather_stage_produced[this_device], 1);
+        
+        // Wait for consumer to acknowledge data consumption
+        uint64_t deadline = sync_deadline();
+        while (ldg_acquire_sys_u32(&ctx->gather_stage_consumed[this_device]) == 0 && !(*abort_flag))
+        {
+            if (check_timeout(ctx, deadline, "p2p_gather producer")) break;
+            __nanosleep(SYNC_MIN_SLEEP);
+        }
+    }
     
     // Synchronization barrier
     pg_barrier_inner(ctx, device_mask, this_device, out_device, abort_flag);
