@@ -74,40 +74,6 @@ def cuda_host_unregister(ptr: int) -> None:
         raise RuntimeError(f"cudaHostUnregister({hex(ptr)}) failed: {err} ({_cuda_error_string(err)})")
 
 
-# P2P memory utility functions
-def cuda_device_enable_peer_access(peer_device: int, flags: int = 0) -> None:
-    """Enable peer access to another GPU device."""
-    # First check if peer access is already enabled
-    current_device = cuda_get_device()
-    can_access = ctypes.c_int()
-    try:
-        cuda_device_can_access_peer(ctypes.byref(can_access), current_device, peer_device)
-        if can_access.value != 0:
-            # P2P access is already available, no need to enable it again
-            return
-    except RuntimeError:
-        pass  # Continue with enabling if check fails
-    
-    lib = _cudart()
-    fn = lib.cudaDeviceEnablePeerAccess
-    fn.argtypes = [ctypes.c_int, ctypes.c_uint]
-    fn.restype = ctypes.c_int
-    err = fn(ctypes.c_int(peer_device), ctypes.c_uint(flags))
-    if err not in (CUDA_SUCCESS, CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED):
-        raise RuntimeError(f"cudaDeviceEnablePeerAccess({peer_device}) failed: {err} ({_cuda_error_string(err)})")
-
-
-def cuda_device_disable_peer_access(peer_device: int) -> None:
-    """Disable peer access to another GPU device."""
-    lib = _cudart()
-    fn = lib.cudaDeviceDisablePeerAccess
-    fn.argtypes = [ctypes.c_int]
-    fn.restype = ctypes.c_int
-    err = fn(ctypes.c_int(peer_device))
-    if err not in (CUDA_SUCCESS, CUDA_ERROR_PEER_ACCESS_NOT_ENABLED):
-        raise RuntimeError(f"cudaDeviceDisablePeerAccess({peer_device}) failed: {err} ({_cuda_error_string(err)})")
-
-
 def cuda_device_can_access_peer(can_access_ptr: int, device: int, peer_device: int) -> int:
     """Check if device can access peer device memory."""
     lib = _cudart()
@@ -284,25 +250,6 @@ _memory_manager = OptimizedMemoryManager()
 class P2PMemoryUtils:
     """Utility class for P2P memory operations with optimizations."""
     
-    @staticmethod
-    def enable_peer_access(device: int, peer_device: int, flags: int = 0) -> bool:
-        """Enable peer access between devices."""
-        try:
-            cuda_set_device(device)
-            cuda_device_enable_peer_access(peer_device, flags)
-            return True
-        except RuntimeError:
-            return False
-    
-    @staticmethod
-    def disable_peer_access(device: int, peer_device: int) -> bool:
-        """Disable peer access between devices."""
-        try:
-            cuda_set_device(device)
-            cuda_device_disable_peer_access(peer_device)
-            return True
-        except RuntimeError:
-            return False
     
     @staticmethod
     def can_access_peer(device: int, peer_device: int) -> bool:

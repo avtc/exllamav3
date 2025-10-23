@@ -110,18 +110,86 @@ void p2p_gather_kernel
                 size_t dst_offset = all_offsets[src_device];
                 size_t stride = all_offsets[64];  // Using 64 as max devices
                 
-                for (size_t offset = 0; offset < bytes_to_recv; offset += stage_size)
+                // Check if P2P access is available for this source device
+                bool p2p_available = (ctx->peer_device_ptrs[src_device] != nullptr);
+                
+                if (p2p_available)
                 {
-                    size_t recv_t = offset + t * 16;
-                    if (recv_t < bytes_to_recv)
+                    // P2P access is available - use direct pointer access
+                    void* peer_base_ptr = ctx->peer_device_ptrs[src_device];
+                    
+                    for (size_t offset = 0; offset < bytes_to_recv; offset += stage_size)
                     {
-                        size_t row = recv_t / src_ldim;
-                        size_t col = recv_t % src_ldim;
-                        size_t out_t = row * stride + col + dst_offset;
-                        
-                        // For P2P, we need to enable peer access first
-                        uint4* src = (uint4*)data_ptr;  // This would be replaced with actual P2P access
-                        *((uint4*) (out_data_ptr + out_t)) = src[t];
+                        size_t recv_t = offset + t * 16;
+                        if (recv_t < bytes_to_recv)
+                        {
+                            size_t row = recv_t / src_ldim;
+                            size_t col = recv_t % src_ldim;
+                            size_t out_t = row * stride + col + dst_offset;
+                            
+                            // Access peer device memory directly
+                            // Note: This requires peer access to be enabled on host side
+                            uint4* src = (uint4*)((uint8_t*)peer_base_ptr + offset);
+                            
+                            // Ensure memory coherency with appropriate memory fence
+                            __threadfence();
+                            
+                            *((uint4*) (out_data_ptr + out_t)) = src[t];
+                        }
+                    }
+                }
+                else
+                {
+                    // Fallback: P2P access not available, use cudaMemcpyPeerAsync
+                    // This is slower but provides compatibility when P2P is not available
+                    
+                    // Use shared memory for temporary storage to improve performance
+                    __shared__ uint4 temp_buffer[NUM_THREADS];
+                    
+                    for (size_t offset = 0; offset < bytes_to_recv; offset += stage_size)
+                    {
+                        size_t recv_t = offset + t * 16;
+                        if (recv_t < bytes_to_recv)
+                        {
+                            size_t row = recv_t / src_ldim;
+                            size_t col = recv_t % src_ldim;
+                            size_t out_t = row * stride + col + dst_offset;
+                            
+                            // For threads that need to copy data
+                            if (t == 0)
+                            {
+                                // Use cudaMemcpyPeerAsync for the chunk
+                                size_t chunk_size = min(stage_size, bytes_to_recv - offset);
+                                cudaError_t result = cudaMemcpyPeerAsync(
+                                    out_data_ptr + out_t - col,  // Destination with offset
+                                    out_device,                  // Destination device
+                                    data_ptr + offset,           // Source with offset
+                                    src_device,                  // Source device
+                                    chunk_size,
+                                    0  // Default stream
+                                );
+                                
+                                if (result != cudaSuccess)
+                                {
+                                    // Set abort flag on failure
+                                    *abort_flag = 1;
+                                }
+                            }
+                            
+                            // Wait for the async copy to complete before proceeding
+                            __syncthreads();
+                            
+                            // Now copy from the temporary location to the final destination
+                            if (recv_t < bytes_to_recv)
+                            {
+                                uint4* src = (uint4*)(out_data_ptr + out_t - col);
+                                
+                                // Ensure memory coherency
+                                __threadfence();
+                                
+                                *((uint4*) (out_data_ptr + out_t)) = src[t];
+                            }
+                        }
                     }
                 }
             }

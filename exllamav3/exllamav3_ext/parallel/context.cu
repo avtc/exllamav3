@@ -21,6 +21,9 @@ void pg_init_context(uintptr_t ctx)
         ctx_ptr->gather_stage_produced[i] = 0;
         ctx_ptr->gather_stage_consumed[i] = 0;
         ctx_ptr->cpusum_stage_device[i * REDUCE_STAGE_STRIDE] = 0;
+        
+        // Initialize P2P fields
+        ctx_ptr->peer_device_ptrs[i] = nullptr;
     }
 
     ctx_ptr->reduce_jobs_head = 0;
@@ -35,4 +38,14 @@ void pg_check_timeout(uintptr_t ctx)
     {
         TORCH_CHECK(false, "Synchronization timeout");
     }
+}
+
+void pg_set_peer_device_ptr(uintptr_t ctx, int device, void* ptr)
+{
+    if (device < 0 || device >= MAX_DEVICES) {
+        return;
+    }
+    
+    PGContext* ctx_ptr = (PGContext*) ctx;
+    ctx_ptr->peer_device_ptrs[device] = ptr;
 }

@@ -31,6 +31,9 @@ struct alignas(64) PGContext
     alignas(16) uint32_t gather_stage_produced[MAX_DEVICES];
     alignas(16) uint32_t gather_stage_consumed[MAX_DEVICES];
 
+    // P2P memory access pointers for direct device-to-device access
+    alignas(64) void* peer_device_ptrs[MAX_DEVICES];
+
     // Maintain flags in separate 64-byte regions/cache lines
     alignas(64) uint32_t reduce_jobs_head; char _pad1[64 - sizeof(uint32_t)];
     alignas(64) uint32_t reduce_jobs_tail; char _pad2[64 - sizeof(uint32_t)];
@@ -41,3 +44,6 @@ struct alignas(64) PGContext
 
 void pg_init_context(uintptr_t ctx);
 void pg_check_timeout(uintptr_t ctx);
+
+// P2P setup functions
+void pg_set_peer_device_ptr(uintptr_t ctx, int device, void* ptr);

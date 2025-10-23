@@ -83,6 +83,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("pg_all_reduce_cpu", &pg_all_reduce_cpu, "pg_all_reduce_cpu");
     m.def("run_cpu_reduce_jobs", &run_cpu_reduce_jobs, "run_cpu_reduce_jobs");
     m.def("end_cpu_reduce_jobs", &end_cpu_reduce_jobs, "end_cpu_reduce_jobs");
+    m.def("pg_set_peer_device_ptr", &pg_set_peer_device_ptr, "pg_set_peer_device_ptr");
     
     // P2P functions
     m.def("p2p_broadcast", &p2p_broadcast, "p2p_broadcast");
