@@ -562,9 +562,11 @@ class TestBackendSelectionLogic:
 
     @patch('exllamav3.model.model_tp_backend.TPBackendP2P_AVAILABLE', True)
     @patch('exllamav3.model.model_tp_backend.check_p2p_connectivity')
-    def test_create_tp_backend_auto_p2p_available(self, mock_check_p2p):
+    @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
+    def test_create_tp_backend_auto_p2p_available(self, mock_check_p2p_p2p, mock_check_p2p_backend):
         """Test auto backend selection when P2P is available and connected."""
-        mock_check_p2p.return_value = True
+        mock_check_p2p_backend.return_value = True
+        mock_check_p2p_p2p.return_value = True
         
         backend = create_tp_backend(
             backend_type="auto",
@@ -578,7 +580,8 @@ class TestBackendSelectionLogic:
         
         # Should return P2P backend when auto detects P2P connectivity
         assert isinstance(backend, TPBackendP2P)
-        mock_check_p2p.assert_called_once_with([0, 1])
+        mock_check_p2p_backend.assert_called_once_with([0, 1])
+        mock_check_p2p_p2p.assert_called_once_with([0, 1])
 
     @patch('exllamav3.model.model_tp_backend.TPBackendP2P_AVAILABLE', True)
     @patch('exllamav3.model.model_tp_backend.check_p2p_connectivity')
@@ -605,8 +608,13 @@ class TestBackendSelectionLogic:
             mock_check_p2p.assert_called_once_with([0, 1])
 
     @patch('exllamav3.model.model_tp_backend.TPBackendP2P_AVAILABLE', True)
-    def test_create_tp_backend_explicit_p2p(self):
+    @patch('exllamav3.model.model_tp_backend.check_p2p_connectivity')
+    @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
+    def test_create_tp_backend_explicit_p2p(self, mock_check_p2p_p2p, mock_check_p2p_backend):
         """Test explicit P2P backend selection."""
+        mock_check_p2p_backend.return_value = True
+        mock_check_p2p_p2p.return_value = True
+        
         backend = create_tp_backend(
             backend_type="p2p",
             device=0,
