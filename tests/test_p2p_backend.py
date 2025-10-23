@@ -418,7 +418,7 @@ class TestTPBackendP2PMemoryManagement:
                         backend.close()
                         
                         # Verify P2P context destruction
-                        mock_destroy_p2p.assert_called_once_with(backend.p2p_context)
+                        mock_destroy_p2p.assert_called_once_with(0x12345678)
                         
                         # Verify all buffers are unregistered
                         expected_unregister_calls = [
@@ -478,19 +478,14 @@ class TestTPBackendP2PMemoryManagement:
                         call.close()
                     ]
                     # Check that close was called on each shared memory object
-                    for i in range(4):
-                        mock_shm_instance.close.assert_any_call()
+                    shm_instances = [mock_shm.return_value for _ in range(4)]
+                    for shm_instance in shm_instances:
+                        shm_instance.close.assert_called_once()
                     
                     # Verify unlink is called for master process
                     if backend.master:
-                        expected_unlink_calls = [
-                            call.unlink(),
-                            call.unlink(),
-                            call.unlink(),
-                            call.unlink()
-                        ]
-                        for i in range(4):
-                            mock_shm_instance.unlink.assert_any_call()
+                        for shm_instance in shm_instances:
+                            shm_instance.unlink.assert_called_once()
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
     @patch('exllamav3.model.model_tp_backend_p2p.enable_p2p_access')
