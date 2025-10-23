@@ -374,7 +374,7 @@ void pg_all_reduce_full_p2p_kernel
     
     // Find peer devices for P2P communication
     int next_device = peer_devices[(this_rank + 1) % num_ranks];
-    int prev_device = peer_devices[(this_rank + num_ranks - 1) % num_ranks];
+    // Note: prev_device calculation removed - P2P implementation only uses next_device for sending
 
     // Loop around ring using P2P communication
     for (int iter = 0; iter < (num_ranks - 1) * 2; ++iter)

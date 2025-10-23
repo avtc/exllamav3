@@ -346,7 +346,7 @@ void pg_broadcast_full_p2p_kernel
     const size_t stage_size = BROADCAST_STAGE_SIZE;
     int num_buffered_stages = shbuf_size / stage_size;
     int num_stages = CEIL_DIVIDE(data_size, stage_size);
-    int local_stage = 0;
+    // Note: Removed unused local_stage variable - P2P implementation manages stages through context structure
 
     uint8_t* data_end = data_ptr + data_size;
 

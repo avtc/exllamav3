@@ -66,15 +66,8 @@ void pg_barrier_full_p2p_kernel
     int t = threadIdx.x;
     auto grid = cg::this_grid();
 
-    __shared__ uint32_t local_epoch;
-    __shared__ bool all_ready;
-    
-    // Initialize local epoch from global epoch
-    if (t == 0)
-    {
-        local_epoch = ctx->barrier_epoch;
-    }
-    __syncthreads();
+    // Note: Removed unused local_epoch and all_ready variables
+    // Current implementation uses ctx->barrier_epoch and ctx->barrier_epoch_device directly
     
     // Each device increments its own epoch counter
     if (t == 0)
