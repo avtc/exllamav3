@@ -275,6 +275,7 @@ class TestP2PCommunicationOperations:
         final_sum = tensor1.sum() + tensor2.sum()
         assert torch.isclose(final_sum, original_sum, rtol=1e-5)
 
+    @staticmethod
     def _test_all_reduce_worker(device_idx, active_devices):
         """Worker function for all-reduce test."""
         backend = _create_multi_process_p2p_backend(device_idx, active_devices, "all_reduce")
@@ -307,7 +308,7 @@ class TestP2PCommunicationOperations:
                 pytest.skip("Need at least 2 P2P-capable devices")
             
             # Run test in multi-process environment
-            results = run_p2p_test_multi_process(_test_all_reduce_worker, devices)
+            results = run_p2p_test_multi_process(TestP2PCommunicationOperations._test_all_reduce_worker, devices)
             
             # Verify all processes completed successfully
             assert len(results) == 2, f"Expected 2 processes, got {len(results)}"
