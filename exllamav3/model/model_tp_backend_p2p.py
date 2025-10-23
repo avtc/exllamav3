@@ -245,40 +245,38 @@ class TPBackendP2P(TPBackend):
             log_tp(self.device, f"About to init P2P context with devices: {device_list}")
             log_tp(self.device, f"P2P buffer size: {self.p2p_buffer_size}")
             
-            # For multi-process P2P, only the master should create the context
-            # Other processes should connect to the existing context
+            # For multi-process P2P, we need to ensure both processes use the same context
+            # However, the current P2P implementation doesn't support cross-process context sharing
+            # As a workaround, we'll create separate contexts but add synchronization
+            
+            # Create P2P context for this process
+            self.p2p_context = ext.init_p2p_context(device_list, self.p2p_buffer_size)
+            log_tp(self.device, f"Created P2P context: {self.p2p_context}")
+            
+            # Add synchronization barrier to ensure both processes are ready
             if self.master:
-                # Master process creates the P2P context
-                self.p2p_context = ext.init_p2p_context(device_list, self.p2p_buffer_size)
-                log_tp(self.device, f"Master created P2P context: {self.p2p_context}")
-                
-                # Store the context pointer in shared memory for other processes to access
-                # Use raw bytes to preserve the full 64-bit pointer
-                context_bytes = self.p2p_context.to_bytes(8, byteorder='little')
-                context_np = np.frombuffer(context_bytes, dtype=np.uint8)
-                self.tensor_g[:8] = torch.from_numpy(context_np).to(self.tensor_g.device)
-                log_tp(self.device, f"Stored P2P context pointer ({len(context_bytes)} bytes) in shared memory")
+                # Master process signals readiness via shared memory
+                signal_array = np.array([1], dtype=np.uint32)
+                self.tensor_g[:4] = torch.from_numpy(signal_array).to(self.tensor_g.device)
+                log_tp(self.device, f"Master signaled readiness via shared memory")
                 
             else:
-                # Slave processes wait for master to create context and then retrieve it
-                log_tp(self.device, f"Slave waiting for P2P context from master")
-                
-                # Wait for master to store the context pointer
+                # Slave process waits for master signal
+                log_tp(self.device, f"Slave waiting for master readiness signal")
                 deadline = time.time() + 10  # 10 second timeout
+                
                 while time.time() < deadline:
-                    # Retrieve the raw bytes and convert back to pointer
-                    context_bytes = self.tensor_g[:8].cpu().numpy().tobytes()
-                    context_ptr = int.from_bytes(context_bytes[:8], byteorder='little')
-                    
-                    if context_ptr != 0:
-                        self.p2p_context = context_ptr
-                        log_tp(self.device, f"Slave retrieved P2P context: {self.p2p_context}")
+                    signal_array = self.tensor_g[:4].cpu().numpy().astype(np.uint32)
+                    if signal_array[0] == 1:
+                        log_tp(self.device, f"Slave received master readiness signal")
                         break
-                    
                     time.sleep(0.1)
                 
-                if self.p2p_context == 0:
-                    raise TimeoutError("Timeout waiting for master process to create P2P context")
+                if time.time() >= deadline:
+                    raise TimeoutError("Timeout waiting for master readiness signal")
+            
+            # Additional synchronization delay to ensure both processes are fully initialized
+            time.sleep(0.2)
             
             # Check if context was created/retrieved successfully
             if self.p2p_context == 0:

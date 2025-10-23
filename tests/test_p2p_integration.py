@@ -323,7 +323,15 @@ class TestP2PCommunicationOperations:
         try:
             # Add synchronization delay to ensure both processes are ready
             import time
-            time.sleep(0.5)  # Give both processes time to initialize
+            time.sleep(1.0)  # Give both processes time to initialize
+            
+            # Perform a barrier synchronization first to ensure all processes are ready
+            print(f"DEBUG: Device {device_idx} performing barrier synchronization")
+            backend.fwd_barrier()
+            print(f"DEBUG: Device {device_idx} barrier completed")
+            
+            # Additional synchronization delay
+            time.sleep(0.5)
             
             # Create test tensor
             tensor = torch.randn(1000, device=device_idx)
