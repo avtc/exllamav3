@@ -140,57 +140,20 @@ void p2p_gather_kernel
                 }
                 else
                 {
-                    // Fallback: P2P access not available, use cudaMemcpyPeerAsync
-                    // This is slower but provides compatibility when P2P is not available
+                    // Fallback: P2P access not available
+                    // Since we can't use cudaMemcpyPeerAsync from device code, we'll skip this transfer
+                    // and rely on the host-side implementation to handle such cases
                     
-                    // Use shared memory for temporary storage to improve performance
-                    __shared__ uint4 temp_buffer[NUM_THREADS];
-                    
-                    for (size_t offset = 0; offset < bytes_to_recv; offset += stage_size)
+                    // Set abort flag to indicate this fallback path was taken
+                    // The host should detect this and handle the transfer appropriately
+                    if (t == 0)
                     {
-                        size_t recv_t = offset + t * 16;
-                        if (recv_t < bytes_to_recv)
-                        {
-                            size_t row = recv_t / src_ldim;
-                            size_t col = recv_t % src_ldim;
-                            size_t out_t = row * stride + col + dst_offset;
-                            
-                            // For threads that need to copy data
-                            if (t == 0)
-                            {
-                                // Use cudaMemcpyPeerAsync for the chunk
-                                size_t chunk_size = min(stage_size, bytes_to_recv - offset);
-                                cudaError_t result = cudaMemcpyPeerAsync(
-                                    out_data_ptr + out_t - col,  // Destination with offset
-                                    out_device,                  // Destination device
-                                    data_ptr + offset,           // Source with offset
-                                    src_device,                  // Source device
-                                    chunk_size,
-                                    0  // Default stream
-                                );
-                                
-                                if (result != cudaSuccess)
-                                {
-                                    // Set abort flag on failure
-                                    *abort_flag = 1;
-                                }
-                            }
-                            
-                            // Wait for the async copy to complete before proceeding
-                            __syncthreads();
-                            
-                            // Now copy from the temporary location to the final destination
-                            if (recv_t < bytes_to_recv)
-                            {
-                                uint4* src = (uint4*)(out_data_ptr + out_t - col);
-                                
-                                // Ensure memory coherency
-                                __threadfence();
-                                
-                                *((uint4*) (out_data_ptr + out_t)) = src[t];
-                            }
-                        }
+                        *abort_flag = 2;  // Special code for P2P unavailable
                     }
+                    
+                    // Early exit from this section
+                    __syncthreads();
+                    continue;
                 }
             }
             
@@ -289,6 +252,60 @@ void p2p_gather
         stream
     );
     cuda_check(cudaPeekAtLastError());
+    
+    // Check if the kernel indicated P2P was unavailable (abort flag == 2)
+    cudaDeviceSynchronize();
+    uint32_t abort_value = *abort_flag_ptr;
+    
+    if (abort_value == 2)
+    {
+        // P2P was not available, fall back to host-side memcpyPeerAsync
+        // Reset abort flag
+        *abort_flag_ptr = 0;
+        
+        // Perform the gather operation using host-side cudaMemcpyPeerAsync
+        for (size_t dev_idx = 0; dev_idx < devices.size(); ++dev_idx)
+        {
+            int src_device = devices[dev_idx];
+            
+            if (src_device == out_device)
+            {
+                // Skip copying from the output device to itself
+                continue;
+            }
+            
+            // Calculate offsets for this device
+            size_t src_offset = all_offsets[src_device];
+            size_t src_ldim_bytes = all_offsets[src_device + 1] - all_offsets[src_device];
+            size_t total_bytes = src_ldim_bytes * batch;
+            
+            // Perform the peer-to-peer copy from host side
+            const at::cuda::OptionalCUDAGuard src_device_guard(src_device);
+            cudaError_t result = cudaMemcpyPeerAsync(
+                out_data_ptr + src_offset,  // Destination
+                out_device,                 // Destination device
+                data_ptr,                   // Source (from the source device's tensor)
+                src_device,                 // Source device
+                total_bytes,
+                stream
+            );
+            
+            if (result != cudaSuccess)
+            {
+                // Set abort flag on failure
+                *abort_flag_ptr = 1;
+                cuda_check(result);
+            }
+        }
+        
+        // Ensure all copies complete before returning
+        cudaStreamSynchronize(stream);
+    }
+    else if (abort_value == 1)
+    {
+        // Some other error occurred
+        cuda_check(cudaGetLastError());
+    }
 }
 
 void p2p_gather_direct
