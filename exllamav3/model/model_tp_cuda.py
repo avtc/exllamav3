@@ -103,6 +103,19 @@ def check_p2p_connectivity(active_devices: list[int]) -> bool:
     """
     lib = _cudart()
     
+    # Get device count even for single device to validate the device list
+    try:
+        cuda_get_device_count = lib.cudaGetDeviceCount
+        cuda_get_device_count.argtypes = []
+        cuda_get_device_count.restype = ctypes.c_int
+        device_count = cuda_get_device_count()
+        
+        if device_count < len(active_devices):
+            return False
+            
+    except Exception as e:
+        raise RuntimeError(f"Failed to get device count: {e}")
+    
     # Check if we have at least 2 devices for P2P to make sense
     if len(active_devices) < 2:
         return True
@@ -128,7 +141,7 @@ def check_p2p_connectivity(active_devices: list[int]) -> bool:
                 
             # Check P2P access in both directions
             try:
-                # Set current device for API calls
+                # Check device_a -> device_b
                 cuda_set_device = lib.cudaSetDevice
                 cuda_set_device.argtypes = [ctypes.c_int]
                 cuda_set_device.restype = ctypes.c_int
@@ -136,11 +149,20 @@ def check_p2p_connectivity(active_devices: list[int]) -> bool:
                 if err != CUDA_SUCCESS:
                     raise RuntimeError(f"Failed to set device {device_a}: {_cuda_error_string(err)}")
                 
-                # Check if device_a can access device_b
                 cuda_can_access_peer = lib.cudaDeviceCanAccessPeer
                 cuda_can_access_peer.argtypes = [ctypes.c_int, ctypes.c_int]
                 cuda_can_access_peer.restype = ctypes.c_int
                 can_access = cuda_can_access_peer(device_a, device_b)
+                
+                if can_access != 1:
+                    return False
+                    
+                # Check device_b -> device_a (bidirectional check)
+                err = cuda_set_device(device_b)
+                if err != CUDA_SUCCESS:
+                    raise RuntimeError(f"Failed to set device {device_b}: {_cuda_error_string(err)}")
+                
+                can_access = cuda_can_access_peer(device_b, device_a)
                 
                 if can_access != 1:
                     return False

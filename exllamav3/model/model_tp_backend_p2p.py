@@ -1,6 +1,7 @@
 import torch
 import time
 import numpy as np
+from ctypes import POINTER, c_void_p, c_uint32, c_uint64
 from .model_tp_cuda import (
     cuda_host_register,
     cuda_host_unregister,
@@ -233,8 +234,9 @@ class TPBackendP2P(TPBackend):
             
         # Initialize P2P context using new P2P utilities
         try:
-            # Convert device IDs to uintptr_t for P2P operations
-            uintptr_devices = [uintptr_t(d) for d in self.active_devices]
+            # Convert device IDs to appropriate type for P2P operations
+            # Use c_uint64 as uintptr_t equivalent for 64-bit systems
+            uintptr_devices = [c_uint64(d) for d in self.active_devices]
             
             # Initialize P2P context
             self.p2p_context = ext.init_p2p_context(uintptr_devices, self.p2p_buffer_size)
@@ -344,7 +346,7 @@ class TPBackendP2P(TPBackend):
             - Automatically manages device context switching
         """
         # Use P2P-optimized barrier
-        uintptr_devices = [uintptr_t(d) for d in self.active_devices]
+        uintptr_devices = [c_uint64(d) for d in self.active_devices]
         abort_flag = torch.zeros((1,), device=self.device, dtype=torch.int32)
         ext.pg_barrier_full_p2p(
             self.p2p_context,
@@ -384,7 +386,7 @@ class TPBackendP2P(TPBackend):
             )
         else:
             # Use P2P-optimized direct transfer with new kernels
-            uintptr_devices = [uintptr_t(d) for d in self.active_devices]
+            uintptr_devices = [c_uint64(d) for d in self.active_devices]
             abort_flag = torch.zeros((1,), device=self.device, dtype=torch.int32)
             ext.pg_broadcast_full_p2p(
                 self.p2p_context,
@@ -418,7 +420,7 @@ class TPBackendP2P(TPBackend):
             - Automatically manages device context and error handling
         """
         # Use P2P-optimized all-reduce with new kernels
-        uintptr_devices = [uintptr_t(d) for d in self.active_devices]
+        uintptr_devices = [c_uint64(d) for d in self.active_devices]
         abort_flag = torch.zeros((1,), device=self.device, dtype=torch.int32)
         ext.pg_all_reduce_full_p2p(
             self.p2p_context,
@@ -472,7 +474,7 @@ class TPBackendP2P(TPBackend):
                 raise ValueError(f"Gather: Output tensor must match size of concatenated slices: {sum(ldims)}")
             
             # Use P2P gather with new kernels
-            uintptr_devices = [uintptr_t(d) for d in self.active_devices]
+            uintptr_devices = [c_uint64(d) for d in self.active_devices]
             abort_flag = torch.zeros((1,), device=self.device, dtype=torch.int32)
             ext.pg_gather_full_p2p(
                 self.p2p_context,
