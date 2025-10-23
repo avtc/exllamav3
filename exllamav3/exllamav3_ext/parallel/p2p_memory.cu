@@ -308,19 +308,35 @@ void p2p_device_barrier(
     at::Tensor& abort_flag
 )
 {
+    printf("DEBUG: ===== ENTERING p2p_device_barrier for device %d =====\n", this_device);
+    printf("DEBUG: Function entry, parameters: devices.size()=%zu, this_device=%d\n", devices.size(), this_device);
+    
+    printf("DEBUG: About to create device guard for device %d\n", this_device);
     const at::cuda::OptionalCUDAGuard device_guard(this_device);
+    printf("DEBUG: Device guard created successfully for device %d\n", this_device);
     
     if (devices.size() <= 1) {
         // Single device or empty list, just synchronize locally
+        printf("DEBUG: Single device barrier for device %d\n", this_device);
         cudaDeviceSynchronize();
         return;
     }
     
+    printf("DEBUG: Multi-device barrier for device %d with %zu devices\n", this_device, devices.size());
+    
     // Check for abort flag
+    printf("DEBUG: Getting abort flag pointer for device %d\n", this_device);
     uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
+    printf("DEBUG: Abort flag pointer obtained for device %d\n", this_device);
+    
     if (*abort_flag_ptr != 0) {
+        printf("DEBUG: Abort flag already set (%d) for device %d, returning early\n", *abort_flag_ptr, this_device);
         return;
     }
+    
+    printf("DEBUG: Abort flag check passed for device %d\n", this_device);
+    
+    printf("DEBUG: About to declare static variables for device %d\n", this_device);
     
     // Shared synchronization structures for tree reduction
     struct BarrierSyncData {
@@ -330,37 +346,65 @@ void p2p_device_barrier(
         uint32_t padding[61];      // Padding to cache line size
     };
     
+    printf("DEBUG: BarrierSyncData struct defined for device %d\n", this_device);
+    
     // P2P accessible synchronization data
     static BarrierSyncData* g_barrier_sync_data[64] = {nullptr};  // One per device
     static bool sync_data_initialized = false;
     static std::mutex sync_data_mutex;
+    
+    printf("DEBUG: Static arrays and mutex declared for device %d\n", this_device);
     
     // Event storage for inter-device synchronization
     static cudaEvent_t inter_device_events[64][64];  // events[source][target]
     static bool events_initialized = false;
     static std::mutex events_mutex;
     
+    printf("DEBUG: Checking sync_data_initialized for device %d\n", this_device);
+    
     // Initialize synchronization data on first call
     if (!sync_data_initialized) {
+        printf("DEBUG: Initializing sync data for device %d\n", this_device);
         std::lock_guard<std::mutex> lock(sync_data_mutex);
         if (!sync_data_initialized) {
             // Get actual device count
             int actual_device_count = 0;
             cudaError_t result = cudaGetDeviceCount(&actual_device_count);
             if (result != cudaSuccess) {
-                actual_device_count = 8;  // Default fallback
+                printf("ERROR: Failed to get device count: %s\n", cudaGetErrorString(result));
+                *abort_flag_ptr = 1;
+                return;
             }
             
+            printf("DEBUG: Found %d devices for sync data allocation\n", actual_device_count);
+            
             // Allocate P2P accessible memory for synchronization data
+            printf("DEBUG: Starting allocation loop for %d devices\n", actual_device_count);
             for (int dev = 0; dev < actual_device_count; dev++) {
+                printf("DEBUG: Allocating sync data for device %d\n", dev);
                 const at::cuda::OptionalCUDAGuard guard(dev);
-                cudaError_t alloc_result = cudaMalloc(&g_barrier_sync_data[dev], sizeof(BarrierSyncData));
+                printf("DEBUG: Guard set for device %d\n", dev);
+                
+                void* ptr = nullptr;
+                cudaError_t alloc_result = cudaMalloc(&ptr, sizeof(BarrierSyncData));
+                printf("DEBUG: cudaMalloc returned %d for device %d\n", alloc_result, dev);
+                
+                g_barrier_sync_data[dev] = (BarrierSyncData*)ptr;
+                
                 if (alloc_result == cudaSuccess) {
                     // Initialize the synchronization data
-                    cudaMemset(g_barrier_sync_data[dev], 0, sizeof(BarrierSyncData));
-                    printf("DEBUG: Allocated sync data for device %d\n", dev);
+                    printf("DEBUG: Memsetting sync data for device %d\n", dev);
+                    cudaError_t memset_result = cudaMemset(ptr, 0, sizeof(BarrierSyncData));
+                    printf("DEBUG: cudaMemset returned %d for device %d\n", memset_result, dev);
+                    
+                    if (memset_result == cudaSuccess) {
+                        printf("DEBUG: Successfully allocated and initialized sync data for device %d\n", dev);
+                    } else {
+                        printf("ERROR: Failed to initialize sync data for device %d: %s\n", dev, cudaGetErrorString(memset_result));
+                        g_barrier_sync_data[dev] = nullptr;
+                    }
                 } else {
-                    printf("WARNING: Failed to allocate sync data for device %d: %s\n", dev, cudaGetErrorString(alloc_result));
+                    printf("ERROR: Failed to allocate sync data for device %d: %s\n", dev, cudaGetErrorString(alloc_result));
                     g_barrier_sync_data[dev] = nullptr;
                 }
             }
@@ -388,8 +432,13 @@ void p2p_device_barrier(
         }
     }
     
+    printf("DEBUG: Starting Phase 1 for device %d\n", this_device);
+    
     // Phase 1: Local synchronization and event recording
+    printf("DEBUG: About to call cudaDeviceSynchronize for device %d\n", this_device);
     cudaError_t result = cudaDeviceSynchronize();
+    printf("DEBUG: cudaDeviceSynchronize returned %d for device %d\n", result, this_device);
+    
     if (result != cudaSuccess) {
         printf("ERROR: Local device synchronization failed for device %d: %s\n",
                this_device, cudaGetErrorString(result));
@@ -397,9 +446,15 @@ void p2p_device_barrier(
         return;
     }
     
+    printf("DEBUG: Phase 1 completed successfully for device %d\n", this_device);
+    
+    printf("DEBUG: Creating event for device %d\n", this_device);
+    
     // Record event on this device
     cudaEvent_t local_event;
     result = cudaEventCreateWithFlags(&local_event, cudaEventDisableTiming);
+    printf("DEBUG: cudaEventCreateWithFlags returned %d for device %d\n", result, this_device);
+    
     if (result != cudaSuccess) {
         printf("ERROR: Failed to create event on device %d: %s\n",
                this_device, cudaGetErrorString(result));
@@ -407,7 +462,10 @@ void p2p_device_barrier(
         return;
     }
     
+    printf("DEBUG: Recording event for device %d\n", this_device);
     result = cudaEventRecord(local_event, 0);
+    printf("DEBUG: cudaEventRecord returned %d for device %d\n", result, this_device);
+    
     if (result != cudaSuccess) {
         printf("ERROR: Failed to record event on device %d: %s\n",
                this_device, cudaGetErrorString(result));
@@ -416,18 +474,27 @@ void p2p_device_barrier(
         return;
     }
     
+    printf("DEBUG: Event creation and recording completed for device %d\n", this_device);
+    
+    printf("DEBUG: Starting Phase 2 for device %d\n", this_device);
+    
     // Phase 2: Cross-device synchronization using P2P where available
     std::vector<cudaEvent_t> peer_events;
     std::vector<int> peer_devices;
+    
+    printf("DEBUG: Collecting P2P peers for device %d\n", this_device);
     
     // Collect events from peer devices that we can access via P2P
     for (size_t i = 0; i < devices.size(); i++) {
         int peer_device = (int)devices[i];
         if (peer_device == this_device) continue;
         
+        printf("DEBUG: Checking P2P access from device %d to device %d\n", this_device, peer_device);
+        
         // Check if P2P access is possible
         int can_access = 0;
         result = cudaDeviceCanAccessPeer(&can_access, this_device, peer_device);
+        printf("DEBUG: cudaDeviceCanAccessPeer returned %d, can_access=%d for device %d->%d\n", result, can_access, this_device, peer_device);
         
         if (result == cudaSuccess && can_access) {
             // P2P is available, we can directly synchronize with the peer
@@ -436,24 +503,38 @@ void p2p_device_barrier(
             
             // Add to list of peers to synchronize with
             peer_devices.push_back(peer_device);
+            printf("DEBUG: Added device %d as P2P peer for device %d\n", peer_device, this_device);
+        } else {
+            printf("DEBUG: Device %d cannot access device %d via P2P\n", this_device, peer_device);
         }
     }
     
+    printf("DEBUG: Phase 2 peer collection completed for device %d, found %zu peers\n", this_device, peer_devices.size());
+    
+    printf("DEBUG: Choosing synchronization strategy for device %d\n", this_device);
+    
     // Synchronization strategy based on number of devices
     if (devices.size() == 2) {
+        printf("DEBUG: Using 2-device synchronization for device %d\n", this_device);
+        
         // Simple 2-device synchronization
         if (!peer_devices.empty()) {
             int peer_device = peer_devices[0];
+            printf("DEBUG: Synchronizing with peer device %d for device %d\n", peer_device, this_device);
             
             // Wait for peer device using shared event mechanism
             if (g_barrier_sync_data[this_device] && g_barrier_sync_data[peer_device]) {
+                printf("DEBUG: Both sync data structures available for device %d\n", this_device);
+                
                 // Use P2P memory for synchronization flags
                 volatile uint32_t* peer_flag = &g_barrier_sync_data[peer_device]->phase_flags[this_device];
                 volatile uint32_t* my_flag = &g_barrier_sync_data[this_device]->phase_flags[peer_device];
                 
+                printf("DEBUG: Setting flag for device %d\n", this_device);
                 // Set our flag to indicate we're ready
                 *my_flag = 1;
                 
+                printf("DEBUG: Waiting for peer flag from device %d\n", peer_device);
                 // Wait for peer to set their flag
                 const int max_wait_cycles = 1000000;  // Prevent infinite loops
                 int wait_cycles = 0;
@@ -473,9 +554,11 @@ void p2p_device_barrier(
                     *abort_flag_ptr = 1;
                 }
                 
+                printf("DEBUG: Resetting flag for device %d\n", this_device);
                 // Reset flags for next barrier
                 *my_flag = 0;
             } else {
+                printf("DEBUG: Falling back to regular synchronization for device %d\n", this_device);
                 // Fallback to regular synchronization
                 result = cudaDeviceSynchronize();
                 if (result != cudaSuccess) {
@@ -484,13 +567,21 @@ void p2p_device_barrier(
                     *abort_flag_ptr = 1;
                 }
             }
+        } else {
+            printf("DEBUG: No P2P peers available for device %d\n", this_device);
         }
     } else {
+        printf("DEBUG: Using multi-device synchronization for device %d\n", this_device);
+        printf("DEBUG: Starting sophisticated multi-device barrier for device %d\n", this_device);
+        
         // Sophisticated multi-device barrier using tree reduction algorithm
         // This implementation reduces synchronization complexity from O(N) to O(log N)
         
+        printf("DEBUG: Ensuring local operations complete for device %d\n", this_device);
         // First, ensure all local operations are complete
         result = cudaDeviceSynchronize();
+        printf("DEBUG: Local sync returned %d for device %d\n", result, this_device);
+        
         if (result != cudaSuccess) {
             printf("ERROR: Multi-device barrier local sync failed for device %d: %s\n",
                    this_device, cudaGetErrorString(result));
@@ -499,14 +590,18 @@ void p2p_device_barrier(
             return;
         }
         
+        printf("DEBUG: Starting tree reduction implementation for device %d\n", this_device);
         // Tree reduction implementation
         int num_devices = (int)devices.size();
+        printf("DEBUG: Total devices in barrier: %d for device %d\n", num_devices, this_device);
         
         // Find this device's position in the device list
+        printf("DEBUG: Finding device rank for device %d\n", this_device);
         int device_rank = -1;
         for (int i = 0; i < num_devices; i++) {
             if (devices[i] == this_device) {
                 device_rank = i;
+                printf("DEBUG: Device %d found at rank %d\n", this_device, device_rank);
                 break;
             }
         }
@@ -518,6 +613,7 @@ void p2p_device_barrier(
             return;
         }
         
+        printf("DEBUG: Calculating tree structure for device %d\n", this_device);
         // Calculate tree structure
         // For non-power-of-2 device counts, we handle the extra devices at the leaf level
         int tree_height = 0;
@@ -526,37 +622,54 @@ void p2p_device_barrier(
             temp = (temp + 1) / 2;  // Ceiling division
             tree_height++;
         }
+        printf("DEBUG: Tree height calculated as %d for device %d\n", tree_height, this_device);
+        
+        printf("DEBUG: Starting Phase 1 (Leaf synchronization) for device %d\n", this_device);
         
         // Phase 1: Leaf nodes synchronize with their parent
         // Each device at level 0 (leaf) synchronizes with its parent at level 1
         if (device_rank < num_devices) {
+            printf("DEBUG: Device %d (rank %d) is within device range\n", this_device, device_rank);
             int parent_rank = device_rank / 2;
+            printf("DEBUG: Calculated parent rank as %d for device %d\n", parent_rank, this_device);
             
             if (parent_rank < num_devices && parent_rank != device_rank) {
                 int parent_device = (int)devices[parent_rank];
+                printf("DEBUG: Parent device ID is %d for device %d\n", parent_device, this_device);
                 
                 // Check if P2P access is available to parent
+                printf("DEBUG: Checking P2P access to parent for device %d\n", this_device);
                 int can_access_parent = 0;
                 result = cudaDeviceCanAccessPeer(&can_access_parent, this_device, parent_device);
+                printf("DEBUG: P2P access check returned %d, can_access=%d for device %d->%d\n", result, can_access_parent, this_device, parent_device);
                 
                 if (result == cudaSuccess && can_access_parent) {
+                    printf("DEBUG: P2P access available, creating leaf event for device %d\n", this_device);
                     // P2P access is handled by PyTorch automatically
                     // Create event for synchronization with parent
                     cudaEvent_t leaf_event;
                     result = cudaEventCreateWithFlags(&leaf_event, cudaEventDisableTiming);
+                    printf("DEBUG: Leaf event creation returned %d for device %d\n", result, this_device);
+                    
                     if (result == cudaSuccess) {
                         result = cudaEventRecord(leaf_event, 0);
+                        printf("DEBUG: Leaf event record returned %d for device %d\n", result, this_device);
+                        
                         if (result == cudaSuccess) {
+                            printf("DEBUG: Sharing event with parent using P2P memory for device %d\n", this_device);
                             // Share event with parent device using P2P memory
                             if (g_barrier_sync_data[this_device] && g_barrier_sync_data[parent_device]) {
+                                printf("DEBUG: Both sync data structures available for device %d\n", this_device);
                                 // Store event pointer in shared memory for parent to access
                                 // Note: In a real implementation, we'd need IPC mechanisms
                                 // For now, we'll use the phase flags as a simple signaling mechanism
                                 
                                 volatile uint32_t* parent_signal = &g_barrier_sync_data[parent_device]->phase_flags[this_device];
+                                printf("DEBUG: Setting parent signal for device %d\n", this_device);
                                 *parent_signal = 1;  // Signal parent we're ready
                                 
                                 // Wait for parent acknowledgment
+                                printf("DEBUG: Waiting for parent acknowledgment for device %d\n", this_device);
                                 volatile uint32_t* parent_ack = &g_barrier_sync_data[this_device]->phase_flags[parent_device];
                                 const int max_wait = 100000;
                                 int wait_count = 0;
@@ -571,19 +684,23 @@ void p2p_device_barrier(
                                     wait_count++;
                                 }
                                 
+                                printf("DEBUG: Cleaning up signals for device %d\n", this_device);
                                 // Clean up signals
                                 *parent_signal = 0;
                                 if (wait_count >= max_wait) {
                                     printf("WARNING: Parent acknowledgment timeout for device %d\n", this_device);
                                 }
                             } else {
+                                printf("DEBUG: Falling back to device synchronization for device %d\n", this_device);
                                 // Fallback to device synchronization
                                 result = cudaDeviceSynchronize();
                             }
                         }
+                        printf("DEBUG: Destroying leaf event for device %d\n", this_device);
                         cudaEventDestroy(leaf_event);
                     }
                 } else {
+                    printf("DEBUG: No P2P access, falling back to regular sync for device %d\n", this_device);
                     // Fallback to regular synchronization
                     result = cudaDeviceSynchronize();
                 }
@@ -595,8 +712,14 @@ void p2p_device_barrier(
                     cudaEventDestroy(local_event);
                     return;
                 }
+            } else {
+                printf("DEBUG: Device %d has no valid parent (parent_rank=%d)\n", this_device, parent_rank);
             }
+        } else {
+            printf("DEBUG: Device %d (rank %d) is outside device range\n", this_device, device_rank);
         }
+        
+        printf("DEBUG: Phase 1 completed for device %d\n", this_device);
         
         // Phase 2: Internal nodes synchronize up the tree
         // Each level synchronizes with the next level up
