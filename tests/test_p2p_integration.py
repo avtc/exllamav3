@@ -33,20 +33,34 @@ from exllamav3.model.model_tp_cuda import check_p2p_connectivity
 @contextmanager
 def skip_if_no_p2p_support():
     """Skip test if P2P support is not available."""
+    print("DEBUG: Entering skip_if_no_p2p_support context manager")
+    
     if not torch.cuda.is_available():
+        print("DEBUG: CUDA not available, skipping test")
         pytest.skip("CUDA not available")
     
     if torch.cuda.device_count() < 2:
+        print(f"DEBUG: Only {torch.cuda.device_count()} CUDA devices available, skipping test")
         pytest.skip("At least 2 CUDA devices required for P2P testing")
     
     # Check if P2P is actually supported
     try:
         device0 = torch.device('cuda:0')
         device1 = torch.device('cuda:1')
-        if not torch.cuda.can_device_access_peer(device0, device1):
+        print(f"DEBUG: Checking P2P connectivity between {device0} and {device1}")
+        p2p_available = torch.cuda.can_device_access_peer(device0, device1)
+        print(f"DEBUG: P2P connectivity check result: {p2p_available}")
+        if not p2p_available:
             pytest.skip("P2P connectivity not available between devices")
     except Exception as e:
+        print(f"DEBUG: P2P connectivity check failed with exception: {e}")
         pytest.skip(f"P2P connectivity check failed: {e}")
+    
+    print("DEBUG: All P2P checks passed, yielding to test")
+    try:
+        yield  # This is where the test should run
+    finally:
+        print("DEBUG: Exiting skip_if_no_p2p_support context manager")
 
 
 @contextmanager
