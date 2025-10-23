@@ -130,19 +130,34 @@ def _is_multi_process_environment():
 
 def _run_p2p_test_in_subprocess(device_idx, active_devices, test_func, result_queue):
     """Run P2P test in a subprocess."""
+    print(f"DEBUG: Subprocess {os.getpid()} starting for device {device_idx}")
+    print(f"DEBUG: Subprocess CUDA available before init: {torch.cuda.is_available()}")
+    
     try:
         # Set device-specific environment variable
         os.environ[f'_TEST_DEVICE_{device_idx}'] = '1'
         
+        # Check if CUDA is available in subprocess before setting device
+        if not torch.cuda.is_available():
+            print(f"DEBUG: CUDA not available in subprocess {os.getpid()}")
+            raise RuntimeError("CUDA not available in subprocess")
+        
+        print(f"DEBUG: Subprocess {os.getpid()} setting CUDA device to {device_idx}")
         # Set the CUDA device for this process
         torch.cuda.set_device(device_idx)
+        print(f"DEBUG: Subprocess {os.getpid()} successfully set CUDA device")
         
         # Run the test function
+        print(f"DEBUG: Subprocess {os.getpid()} executing test function")
         result = test_func(device_idx, active_devices)
+        print(f"DEBUG: Subprocess {os.getpid()} test completed successfully")
         
         result_queue.put(('success', device_idx, result))
         
     except Exception as e:
+        print(f"DEBUG: Subprocess {os.getpid()} failed with error: {e}")
+        import traceback
+        print(f"DEBUG: Full traceback: {traceback.format_exc()}")
         result_queue.put(('error', device_idx, str(e)))
 
 
@@ -161,6 +176,12 @@ def _create_multi_process_p2p_backend(device_idx, active_devices, uuid_suffix="t
 
 def run_p2p_test_multi_process(test_func, devices=None):
     """Run P2P test with proper multi-process setup."""
+    print("DEBUG: Starting multi-process P2P test")
+    print(f"DEBUG: Current multiprocessing start method: {mp.get_start_method()}")
+    print(f"DEBUG: Parent process CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"DEBUG: Parent process device count: {torch.cuda.device_count()}")
+    
     if devices is None:
         devices = get_available_devices()
     
@@ -172,12 +193,14 @@ def run_p2p_test_multi_process(test_func, devices=None):
     
     # Start worker processes for each device
     for i, device_idx in enumerate(devices[:2]):  # Limit to 2 devices for testing
+        print(f"DEBUG: Creating process for device {device_idx}")
         p = mp.Process(
             target=_run_p2p_test_in_subprocess,
             args=(device_idx, devices[:2], test_func, result_queue)
         )
         processes.append(p)
         p.start()
+        print(f"DEBUG: Started process {p.pid} for device {device_idx}")
     
     # Wait for processes to complete
     for p in processes:
