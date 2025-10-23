@@ -196,37 +196,59 @@ def run_p2p_test_multi_process(test_func, devices=None):
     result_queue = mp.Queue()
     processes = []
     
-    # Start worker processes for each device
-    for i, device_idx in enumerate(devices[:2]):  # Limit to 2 devices for testing
-        print(f"DEBUG: Creating process for device {device_idx}")
-        p = mp.Process(
-            target=_run_p2p_test_in_subprocess,
-            args=(device_idx, devices[:2], test_func, result_queue)
-        )
-        processes.append(p)
-        p.start()
-        print(f"DEBUG: Started process {p.pid} for device {device_idx}")
-    
-    # Wait for processes to complete
-    for p in processes:
-        p.join()
-    
-    # Collect results
-    results = []
-    errors = []
-    
-    while not result_queue.empty():
-        status, device_idx, data = result_queue.get()
-        if status == 'success':
-            results.append((device_idx, data))
-        else:
-            errors.append((device_idx, data))
-    
-    if errors:
-        error_msg = f"P2P test failed with errors: {errors}"
-        raise RuntimeError(error_msg)
-    
-    return results
+    # Create the master backend in parent process first
+    print(f"DEBUG: Creating master backend in parent process")
+    master_backend = None
+    try:
+        master_backend = _create_multi_process_p2p_backend(devices[0], devices[:2], "all_reduce")
+        print(f"DEBUG: Master backend created successfully")
+        
+        # Give child processes time to start and connect to shared memory
+        time.sleep(1)
+        
+        # Start worker processes for each device
+        for i, device_idx in enumerate(devices[:2]):  # Limit to 2 devices for testing
+            print(f"DEBUG: Creating process for device {device_idx}")
+            p = mp.Process(
+                target=_run_p2p_test_in_subprocess,
+                args=(device_idx, devices[:2], test_func, result_queue)
+            )
+            processes.append(p)
+            p.start()
+            print(f"DEBUG: Started process {p.pid} for device {device_idx}")
+        
+        # Wait for processes to complete
+        for p in processes:
+            p.join()
+            print(f"DEBUG: Process {p.pid} joined")
+        
+        # Collect results
+        results = []
+        errors = []
+        
+        while not result_queue.empty():
+            status, device_idx, data = result_queue.get()
+            if status == 'success':
+                results.append((device_idx, data))
+            else:
+                errors.append((device_idx, data))
+        
+        if errors:
+            error_msg = f"P2P test failed with errors: {errors}"
+            raise RuntimeError(error_msg)
+        
+        print(f"DEBUG: All processes completed successfully")
+        return results
+        
+    finally:
+        # Clean up master backend AFTER all processes have finished
+        if master_backend is not None:
+            try:
+                print(f"DEBUG: Cleaning up master backend")
+                master_backend.close()
+                print(f"DEBUG: Master backend cleaned up successfully")
+            except Exception as e:
+                print(f"DEBUG: Error closing master backend: {e}")
 
 
 class TestP2PCommunicationOperations:
@@ -276,9 +298,13 @@ class TestP2PCommunicationOperations:
         assert torch.isclose(final_sum, original_sum, rtol=1e-5)
 
     @staticmethod
-    def _test_all_reduce_worker(device_idx, active_devices):
+    def _test_all_reduce_worker(device_idx, active_devices, backend=None):
         """Worker function for all-reduce test."""
-        backend = _create_multi_process_p2p_backend(device_idx, active_devices, "all_reduce")
+        if backend is None:
+            backend = _create_multi_process_p2p_backend(device_idx, active_devices, "all_reduce")
+            should_close = True
+        else:
+            should_close = False
         
         try:
             # Create test tensor
@@ -298,7 +324,8 @@ class TestP2PCommunicationOperations:
             return f"Device {device_idx}: all_reduce completed successfully"
             
         finally:
-            backend.close()
+            if should_close:
+                backend.close()
 
     def test_all_reduce_operation_multi_process(self):
         """Test P2P all-reduce operation with proper multi-process setup."""
