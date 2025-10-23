@@ -87,12 +87,10 @@ class TPBackendP2P:
                 # Initialize P2P memory pool
                 self._init_p2p_memory_pool()
                 
-                # Enable P2P access for all peer devices
+                # P2P access is automatically handled by PyTorch
                 if self.p2p_topology:
                     peer_devices = [d for d in self.active_devices if d != self.device]
-                    log_tp(self.device, f"About to enable P2P access for {len(peer_devices)} peer devices")
-                    ext.p2p_enable_all_peer_access(self.device, peer_devices, self.abort_flag)
-                    log_tp(self.device, f"P2P access enabled for all peer devices")
+                    log_tp(self.device, f"P2P access will be automatically handled by PyTorch for {len(peer_devices)} peer devices")
             except Exception as e:
                 log_tp(device, f"P2P backend initialization failed: {e}")
                 raise RuntimeError(f"P2P backend initialization failed for device {device}: {e}")
@@ -104,11 +102,9 @@ class TPBackendP2P:
             # Initialize P2P memory pool
             self._init_p2p_memory_pool()
             
-            # Enable P2P access for all peer devices
+            # P2P access is automatically handled by PyTorch
             peer_devices = [d for d in self.active_devices if d != self.device]
-            log_tp(self.device, f"About to enable P2P access for {len(peer_devices)} peer devices")
-            ext.p2p_enable_all_peer_access(self.device, peer_devices, self.abort_flag)
-            log_tp(self.device, f"P2P access enabled for all peer devices")
+            log_tp(self.device, f"P2P access will be automatically handled by PyTorch for {len(peer_devices)} peer devices")
         
         # P2P backend operates without fallback - P2P operations must work or fail explicitly
         self.fallback = None
@@ -830,10 +826,12 @@ class TPBackendP2P:
         if not self.use_p2p:
             return False
         
+        # PyTorch automatically handles P2P access when needed
+        # Assume P2P access is available if topology says devices can communicate
         try:
-            is_enabled = ext.p2p_is_peer_access_enabled(self.device, peer_device, self.abort_flag)
-            log_tp(self.device, f"P2P peer access {peer_device}: {'enabled' if is_enabled else 'disabled'}")
-            return is_enabled
+            can_access = self.p2p_topology.can_access_peer(self.device, peer_device) if self.p2p_topology else False
+            log_tp(self.device, f"P2P peer access {peer_device}: {'available' if can_access else 'not available'}")
+            return can_access
         except Exception as e:
             log_tp(self.device, f"P2P peer access check failed: {e}")
             return False

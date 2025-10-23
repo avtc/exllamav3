@@ -97,7 +97,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("p2p_allocate_from_pool", &p2p_allocate_from_pool, "p2p_allocate_from_pool");
     m.def("p2p_free_to_pool", &p2p_free_to_pool, "p2p_free_to_pool");
     m.def("p2p_get_peer_device_ptr", &p2p_get_peer_device_ptr, "p2p_get_peer_device_ptr");
-    m.def("p2p_can_access_peer", &p2p_can_access_peer, "p2p_can_access_peer");
     m.def("p2p_device_barrier", &p2p_device_barrier, "p2p_device_barrier");
     
     // Direct memory access functions
@@ -128,9 +127,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     
     // Synchronization functions
     m.def("p2p_synchronize_devices", &p2p_synchronize_devices, "p2p_synchronize_devices");
-    m.def("p2p_enable_peer_access", &p2p_enable_peer_access, "p2p_enable_peer_access");
-    m.def("p2p_disable_peer_access", &p2p_disable_peer_access, "p2p_disable_peer_access");
-    m.def("p2p_is_peer_access_enabled", &p2p_is_peer_access_enabled, "p2p_is_peer_access_enabled");
     
     // Enhanced direct memory pool functions
     m.def("p2p_init_direct_memory_pool", &p2p_init_direct_memory_pool, "p2p_init_direct_memory_pool");
@@ -142,7 +138,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("p2p_unregister_peer_memory", &p2p_unregister_peer_memory, "p2p_unregister_peer_memory");
     m.def("p2p_get_direct_pool_usage", &p2p_get_direct_pool_usage, "p2p_get_direct_pool_usage");
     m.def("p2p_get_direct_pool_size", &p2p_get_direct_pool_size, "p2p_get_direct_pool_size");
-    m.def("p2p_enable_all_peer_access", &p2p_enable_all_peer_access, "p2p_enable_all_peer_access");
 
     m.def("quantize_tiles", &quantize_tiles, "quantize_tiles");
     m.def("test_distribution", &test_distribution, "test_distribution");

@@ -265,26 +265,6 @@ class TestP2PDirectMemory(unittest.TestCase):
         # Cleanup
         ext.p2p_cleanup_direct_memory_pool(device, backend.abort_flag)
     
-    def test_p2p_peer_access_management(self):
-        """Test P2P peer access management functions."""
-        device = self.devices[0]
-        peer_device = self.devices[1]
-        backend = self.backends[device]
-        
-        # Test enabling peer access
-        ext.p2p_enable_peer_access(device, peer_device, backend.abort_flag)
-        
-        # Check if peer access is enabled
-        is_enabled = ext.p2p_is_peer_access_enabled(device, peer_device, backend.abort_flag)
-        self.assertTrue(is_enabled, "Peer access should be enabled")
-        
-        # Test disabling peer access
-        ext.p2p_disable_peer_access(device, peer_device, backend.abort_flag)
-        
-        # Check if peer access is disabled
-        # Note: This might still return true depending on CUDA implementation
-        is_enabled = ext.p2p_is_peer_access_enabled(device, peer_device, backend.abort_flag)
-        # We don't assert here as behavior can vary
     
     def test_p2p_performance_measurement(self):
         """Test P2P performance measurement functions."""

@@ -146,21 +146,3 @@ void p2p_synchronize_devices(
     std::vector<int> devices,
     at::Tensor& abort_flag
 );
-
-void p2p_enable_peer_access(
-    int device,
-    int peer_device,
-    at::Tensor& abort_flag
-);
-
-void p2p_disable_peer_access(
-    int device,
-    int peer_device,
-    at::Tensor& abort_flag
-);
-
-bool p2p_is_peer_access_enabled(
-    int device,
-    int peer_device,
-    at::Tensor& abort_flag
-);
