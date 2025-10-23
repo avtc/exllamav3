@@ -241,10 +241,19 @@ class TPBackendP2P(TPBackend):
             # Use plain integers for device IDs as expected by the extension
             device_list = self.active_devices
             
+            # Add detailed diagnostics before P2P context init
+            log_tp(self.device, f"About to init P2P context with devices: {device_list}")
+            log_tp(self.device, f"P2P buffer size: {self.p2p_buffer_size}")
+            
             # Initialize P2P context
             self.p2p_context = ext.init_p2p_context(device_list, self.p2p_buffer_size)
+            
+            # Check if context was created successfully
+            if self.p2p_context == 0:
+                raise RuntimeError("P2P context initialization returned null pointer")
+                
             self.p2p_initialized = True
-            log_tp(self.device, f"P2P context initialized successfully")
+            log_tp(self.device, f"P2P context initialized successfully: {self.p2p_context}")
             
         except Exception as e:
             log_tp(self.device, f"Failed to initialize P2P context: {e}")
@@ -422,16 +431,30 @@ class TPBackendP2P(TPBackend):
         # Use P2P-optimized all-reduce with new kernels
         device_list = self.active_devices
         abort_flag = torch.zeros((1,), device=self.device, dtype=torch.int32)
-        ext.pg_all_reduce_full_p2p(
-            self.p2p_context,
-            device_list,
-            self.device,
-            self.active_devices[0],  # master_device
-            tensor,
-            self.ptr_b,
-            self.shbuf_size,
-            abort_flag
-        )
+        
+        # Add diagnostic logging before all-reduce
+        log_tp(self.device, f"Starting P2P all_reduce: tensor_size={tensor.numel()}, tensor_shape={tensor.shape}")
+        log_tp(self.device, f"P2P context: {self.p2p_context}, shbuf_size={self.shbuf_size}")
+        log_tp(self.device, f"Active devices: {self.active_devices}, this_device: {self.device}")
+        
+        try:
+            ext.pg_all_reduce_full_p2p(
+                self.p2p_context,
+                device_list,
+                self.device,
+                self.active_devices[0],  # master_device
+                tensor,
+                self.ptr_b,
+                self.shbuf_size,
+                abort_flag
+            )
+            log_tp(self.device, f"P2P all_reduce completed successfully")
+        except Exception as e:
+            log_tp(self.device, f"P2P all_reduce failed with error: {e}")
+            # Check if abort flag was set
+            if abort_flag[0] == 1:
+                log_tp(self.device, f"Synchronization timeout detected in all_reduce")
+            raise
     
     
     def gather(

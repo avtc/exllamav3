@@ -321,9 +321,16 @@ class TestP2PCommunicationOperations:
         should_close = False  # Don't close backend here - caller handles it
         
         try:
+            # Add synchronization delay to ensure both processes are ready
+            import time
+            time.sleep(0.5)  # Give both processes time to initialize
+            
             # Create test tensor
             tensor = torch.randn(1000, device=device_idx)
             original_sum = tensor.sum()
+            
+            print(f"DEBUG: Device {device_idx} about to perform all_reduce")
+            print(f"DEBUG: Device {device_idx} tensor shape: {tensor.shape}, sum: {original_sum}")
             
             # Perform all-reduce
             backend.all_reduce(tensor)
@@ -331,6 +338,8 @@ class TestP2PCommunicationOperations:
             # In multi-process all-reduce, each tensor should contain the sum
             # of all tensors from all processes
             final_sum = tensor.sum()
+            
+            print(f"DEBUG: Device {device_idx} all_reduce completed, final sum: {final_sum}")
             
             # Verify the operation completed without error
             assert torch.isclose(final_sum, original_sum * len(active_devices), rtol=1e-5)
