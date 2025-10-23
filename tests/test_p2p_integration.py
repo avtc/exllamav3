@@ -26,6 +26,11 @@ import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
 
+# Set multiprocessing start method to 'spawn' for CUDA compatibility
+if mp.get_start_method() != 'spawn':
+    print(f"DEBUG: Setting multiprocessing start method from '{mp.get_start_method()}' to 'spawn'")
+    mp.set_start_method('spawn', force=True)
+
 # Add the project root to sys.path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
