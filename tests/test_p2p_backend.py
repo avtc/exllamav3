@@ -729,7 +729,6 @@ class TestP2PBackendCommunicationPrimitives:
                     
                     # Mock the P2P barrier function
                     with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_barrier_full_p2p') as mock_barrier:
-                        with patch('exllamav3.model.model_tp_backend_p2p.uintptr_t', side_effect=[0, 1]):
                             abort_flag = torch.zeros((1,), device=0, dtype=torch.int32)
                             backend.fwd_barrier()
                             
@@ -785,9 +784,8 @@ class TestP2PBackendCommunicationPrimitives:
                     # Test large tensor broadcast (should use P2P)
                     large_tensor = torch.randn(10000, device=0)
                     with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_broadcast_full_p2p') as mock_broadcast_p2p:
-                        with patch('exllamav3.model.model_tp_backend_p2p.uintptr_t', side_effect=[0, 1]):
-                            backend.broadcast(large_tensor, src_device=0)
-                            mock_broadcast_p2p.assert_called_once()
+                        backend.broadcast(large_tensor, src_device=0)
+                    mock_broadcast_p2p.assert_called_once()
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
@@ -828,16 +826,15 @@ class TestP2PBackendCommunicationPrimitives:
                     # Test all-reduce operation
                     tensor = torch.randn(1000, device=0)
                     with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_all_reduce_full_p2p') as mock_all_reduce:
-                        with patch('exllamav3.model.model_tp_backend_p2p.uintptr_t', side_effect=[0, 1]):
-                            backend.all_reduce(tensor)
-                            mock_all_reduce.assert_called_once()
-                            args, kwargs = mock_all_reduce.call_args
-                            assert args[0] == backend.p2p_context  # context
-                            assert args[1] == [0, 1]  # devices
-                            assert args[2] == 0  # this_device
-                            assert args[4] is tensor  # tensor
-                            assert args[5] == backend.ptr_b  # shbuf
-                            assert args[6] == backend.shbuf_size  # shbuf_size
+                        backend.all_reduce(tensor)
+                    mock_all_reduce.assert_called_once()
+                    args, kwargs = mock_all_reduce.call_args
+                    assert args[0] == backend.p2p_context  # context
+                    assert args[1] == [0, 1]  # devices
+                    assert args[2] == 0  # this_device
+                    assert args[4] is tensor  # tensor
+                    assert args[5] == backend.ptr_b  # shbuf
+                    assert args[6] == backend.shbuf_size  # shbuf_size
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
@@ -881,17 +878,16 @@ class TestP2PBackendCommunicationPrimitives:
                     ldims = [1000, 1000]
                     
                     with patch('exllamav3.model.model_tp_backend_p2p.ext.pg_gather_full_p2p') as mock_gather:
-                        with patch('exllamav3.model.model_tp_backend_p2p.uintptr_t', side_effect=[0, 1]):
-                            backend.gather(tensor, out_tensor, None, 0, ldims)
-                            mock_gather.assert_called_once()
-                            args, kwargs = mock_gather.call_args
-                            assert args[0] == backend.p2p_context  # context
-                            assert args[1] == [0, 1]  # devices
-                            assert args[2] == 0  # this_device
-                            assert args[3] == 0  # out_device
-                            assert args[4] is tensor  # tensor
-                            assert args[5] is out_tensor  # out_tensor
-                            assert args[6] == ldims  # ldims
+                        backend.gather(tensor, out_tensor, None, 0, ldims)
+                    mock_gather.assert_called_once()
+                    args, kwargs = mock_gather.call_args
+                    assert args[0] == backend.p2p_context  # context
+                    assert args[1] == [0, 1]  # devices
+                    assert args[2] == 0  # this_device
+                    assert args[3] == 0  # out_device
+                    assert args[4] is tensor  # tensor
+                    assert args[5] is out_tensor  # out_tensor
+                    assert args[6] == ldims  # ldims
 
     @patch('exllamav3.model.model_tp_backend_p2p.check_p2p_connectivity')
     @patch('exllamav3.model.model_tp_backend_p2p.cuda_host_register')
