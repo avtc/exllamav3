@@ -207,7 +207,15 @@ def run_p2p_test_multi_process(test_func, devices=None):
     # Use the same pattern as real tensor parallel system
     # Create backend args ONCE like the real system does (lines 56-60 in model_tp.py)
     import uuid
-    from ..util import find_free_port
+    import socket
+    
+    # Find a free port (simple implementation)
+    def find_free_port():
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            s.listen(1)
+            port = s.getsockname()[1]
+        return port
     
     # Find a free port and create backend args once (same as real system)
     master_addr = os.environ.get("EXLLAMA_MASTER_ADDR", "127.0.0.1")
