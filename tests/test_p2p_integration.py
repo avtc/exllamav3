@@ -166,7 +166,10 @@ def _run_p2p_test_in_subprocess_real_pattern(device_idx, active_devices, test_fu
             uuid=backend_args["uuid"]
         )
         
-        print(f"DEBUG: Subprocess {os.getpid()} backend created successfully")
+        print(f"DEBUG: Subprocess {os.getpid()} backend created successfully: {type(backend).__name__}")
+        
+        # Add synchronization delay to ensure both processes are ready
+        time.sleep(1.0)
         
         # Run the test function with the backend
         print(f"DEBUG: Subprocess {os.getpid()} executing test function")
@@ -240,9 +243,13 @@ def run_p2p_test_multi_process(test_func, devices=None):
             p.start()
             print(f"DEBUG: Started process {p.pid} for device {device_idx}")
         
-        # Wait for processes to complete
+        # Wait for processes to complete with timeout
         for p in processes:
-            p.join()
+            p.join(timeout=30)  # Add timeout to prevent hanging
+            if p.is_alive():
+                print(f"DEBUG: Process {p.pid} timed out, terminating")
+                p.terminate()
+                p.join()
             print(f"DEBUG: Process {p.pid} joined")
         
         # Collect results
@@ -264,8 +271,11 @@ def run_p2p_test_multi_process(test_func, devices=None):
         return results
         
     finally:
-        # No manual backend cleanup needed - each process cleans up its own backend
-        pass
+        # Clean up any remaining processes
+        for p in processes:
+            if p.is_alive():
+                p.terminate()
+                p.join()
 
 
 class TestP2PCommunicationOperations:
@@ -317,13 +327,9 @@ class TestP2PCommunicationOperations:
     @staticmethod
     def _test_all_reduce_worker(device_idx, active_devices, backend=None):
         """Worker function for all-reduce test."""
-        # Backend is now passed from the caller (following real tensor parallel pattern)
-        should_close = False  # Don't close backend here - caller handles it
-        
         try:
             # Add synchronization delay to ensure both processes are ready
-            import time
-            time.sleep(1.0)  # Give both processes time to initialize
+            time.sleep(1.0)
             
             # Perform a barrier synchronization first to ensure all processes are ready
             print(f"DEBUG: Device {device_idx} performing barrier synchronization")
@@ -354,9 +360,9 @@ class TestP2PCommunicationOperations:
             
             return f"Device {device_idx}: all_reduce completed successfully"
             
-        finally:
-            if should_close:
-                backend.close()
+        except Exception as e:
+            print(f"DEBUG: Device {device_idx} all_reduce failed: {e}")
+            raise
 
     def test_all_reduce_operation_multi_process(self):
         """Test P2P all-reduce operation with proper multi-process setup."""
@@ -408,6 +414,9 @@ class TestP2PCommunicationOperations:
                     tensor = torch.randn(1000, device=device_idx)
                     original_value = tensor.clone()
                     
+                    # Perform barrier first
+                    backend.fwd_barrier()
+                    
                     # Perform broadcast from device 0
                     if device_idx == 0:
                         # Source device - modify tensor
@@ -424,8 +433,9 @@ class TestP2PCommunicationOperations:
                     
                     return f"Device {device_idx}: broadcast completed successfully"
                     
-                finally:
-                    backend.close()
+                except Exception as e:
+                    print(f"DEBUG: Device {device_idx} broadcast failed: {e}")
+                    raise
             
             # Run test in multi-process environment
             results = run_p2p_test_multi_process(test_broadcast_worker, devices)
@@ -464,6 +474,9 @@ class TestP2PCommunicationOperations:
                     tensor_size = 500
                     tensor = torch.randn(tensor_size, device=device_idx)
                     
+                    # Perform barrier first
+                    backend.fwd_barrier()
+                    
                     # Create output tensor on device 0 (master)
                     if device_idx == 0:
                         output_tensor = torch.randn(tensor_size * len(active_devices), device=device_idx)
@@ -480,8 +493,9 @@ class TestP2PCommunicationOperations:
                         backend.gather(tensor, None, None, 0, [tensor_size] * len(active_devices))
                         return f"Device {device_idx}: gather completed successfully"
                 
-                finally:
-                    backend.close()
+                except Exception as e:
+                    print(f"DEBUG: Device {device_idx} gather failed: {e}")
+                    raise
             
             # Run test in multi-process environment
             results = run_p2p_test_multi_process(test_gather_worker, devices)
@@ -513,8 +527,9 @@ class TestP2PCommunicationOperations:
                     
                     return f"Device {device_idx}: barrier completed successfully"
                     
-                finally:
-                    backend.close()
+                except Exception as e:
+                    print(f"DEBUG: Device {device_idx} barrier failed: {e}")
+                    raise
             
             # Run test in multi-process environment
             results = run_p2p_test_multi_process(test_barrier_worker, devices)
