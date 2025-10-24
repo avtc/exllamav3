@@ -1102,6 +1102,250 @@ class TestMultiProcessIntegration:
             for result in results:
                 assert "completed operations" in result, f"Unexpected result: {result}"
 
+    def test_real_tensor_parallel_integration(self):
+        """Test real tensor parallel integration following the pattern from examples/chat.py."""
+        print("DEBUG: Starting real tensor parallel integration test")
+        
+        with skip_if_no_p2p_support():
+            devices = get_available_devices()
+            if len(devices) < 2:
+                pytest.skip("Need at least 2 P2P-capable devices for real tensor parallel test")
+            
+            print(f"DEBUG: Using devices: {devices}")
+            
+            # Use the same pattern as real tensor parallel system
+            # Create backend args once like the real system does (lines 56-60 in model_tp.py)
+            import uuid
+            import socket
+            
+            def find_free_port():
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(('', 0))
+                    s.listen(1)
+                    port = s.getsockname()[1]
+                return port
+            
+            # Find a free port and create backend args once (same as real system)
+            master_addr = os.environ.get("EXLLAMA_MASTER_ADDR", "127.0.0.1")
+            master_port = os.environ.get("EXLLAMA_MASTER_PORT", find_free_port())
+            backend_args = {
+                "type": "p2p",
+                "init_method": f"tcp://{master_addr}:{master_port}",
+                "uuid": uuid.uuid4().hex,
+            }
+            
+            print(f"DEBUG: Created backend args: {backend_args}")
+            
+            # Start worker processes for each device (like the real system)
+            result_queue = mp.Queue()
+            processes = []
+            
+            for i, device_idx in enumerate(devices[:2]):  # Limit to 2 devices for testing
+                print(f"DEBUG: Creating process for device {device_idx}")
+                p = mp.Process(
+                    target=_run_real_tp_test_worker,
+                    args=(device_idx, devices[:2], result_queue, backend_args)
+                )
+                processes.append(p)
+                p.start()
+                print(f"DEBUG: Started process {p.pid} for device {device_idx}")
+            
+            # Wait for processes to complete with timeout
+            for p in processes:
+                p.join(timeout=60)  # Longer timeout for real tensor parallel
+                if p.is_alive():
+                    print(f"DEBUG: Process {p.pid} timed out, terminating")
+                    p.terminate()
+                    p.join()
+                print(f"DEBUG: Process {p.pid} joined")
+            
+            # Collect results
+            results = []
+            errors = []
+            
+            while not result_queue.empty():
+                status, device_idx, data = result_queue.get()
+                if status == 'success':
+                    results.append((device_idx, data))
+                else:
+                    errors.append((device_idx, data))
+            
+            if errors:
+                error_msg = f"Real tensor parallel test failed with errors: {errors}"
+                print(f"DEBUG: Error details: {errors}")
+                raise RuntimeError(error_msg)
+            
+            print(f"DEBUG: All real tensor parallel processes completed successfully")
+            
+            # Verify all processes completed successfully
+            assert len(results) == 2, f"Expected 2 processes, got {len(results)}"
+            
+            for device_idx, result in results:
+                assert "completed successfully" in result, f"Device {device_idx} failed: {result}"
+
+
+def run_real_tp_test():
+    """Run a real tensor parallel test following the pattern from examples/chat.py."""
+    print("DEBUG: Starting real tensor parallel test")
+    
+    with skip_if_no_p2p_support():
+        devices = get_available_devices()
+        if len(devices) < 2:
+            pytest.skip("Need at least 2 P2P-capable devices for real tensor parallel test")
+        
+        print(f"DEBUG: Using devices: {devices}")
+        
+        # Use the same pattern as real tensor parallel system
+        # Create backend args once like the real system does (lines 56-60 in model_tp.py)
+        import uuid
+        import socket
+        
+        def find_free_port():
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('', 0))
+                s.listen(1)
+                port = s.getsockname()[1]
+            return port
+        
+        # Find a free port and create backend args once (same as real system)
+        master_addr = os.environ.get("EXLLAMA_MASTER_ADDR", "127.0.0.1")
+        master_port = os.environ.get("EXLLAMA_MASTER_PORT", find_free_port())
+        backend_args = {
+            "type": "p2p",
+            "init_method": f"tcp://{master_addr}:{master_port}",
+            "uuid": uuid.uuid4().hex,
+        }
+        
+        print(f"DEBUG: Created backend args: {backend_args}")
+        
+        # Start worker processes for each device (like the real system)
+        result_queue = mp.Queue()
+        processes = []
+        
+        for i, device_idx in enumerate(devices[:2]):  # Limit to 2 devices for testing
+            print(f"DEBUG: Creating process for device {device_idx}")
+            p = mp.Process(
+                target=_run_real_tp_test_worker,
+                args=(device_idx, devices[:2], result_queue, backend_args)
+            )
+            processes.append(p)
+            p.start()
+            print(f"DEBUG: Started process {p.pid} for device {device_idx}")
+        
+        # Wait for processes to complete with timeout
+        for p in processes:
+            p.join(timeout=60)  # Longer timeout for real tensor parallel
+            if p.is_alive():
+                print(f"DEBUG: Process {p.pid} timed out, terminating")
+                p.terminate()
+                p.join()
+            print(f"DEBUG: Process {p.pid} joined")
+        
+        # Collect results
+        results = []
+        errors = []
+        
+        while not result_queue.empty():
+            status, device_idx, data = result_queue.get()
+            if status == 'success':
+                results.append((device_idx, data))
+            else:
+                errors.append((device_idx, data))
+        
+        if errors:
+            error_msg = f"Real tensor parallel test failed with errors: {errors}"
+            print(f"DEBUG: Error details: {errors}")
+            raise RuntimeError(error_msg)
+        
+        print(f"DEBUG: All real tensor parallel processes completed successfully")
+        return results
+
+
+def _run_real_tp_test_worker(device_idx, active_devices, result_queue, backend_args):
+    """Worker function for real tensor parallel test following the real system pattern."""
+    print(f"DEBUG: Real TP worker {os.getpid()} starting for device {device_idx}")
+    print(f"DEBUG: Real TP worker CUDA available before init: {torch.cuda.is_available()}")
+    
+    try:
+        # Set device-specific environment variable
+        os.environ[f'_TEST_DEVICE_{device_idx}'] = '1'
+        
+        # Check if CUDA is available in subprocess before setting device
+        if not torch.cuda.is_available():
+            print(f"DEBUG: CUDA not available in subprocess {os.getpid()}")
+            raise RuntimeError("CUDA not available in subprocess")
+        
+        print(f"DEBUG: Real TP worker {os.getpid()} setting CUDA device to {device_idx}")
+        # Set the CUDA device for this process
+        torch.cuda.set_device(device_idx)
+        print(f"DEBUG: Real TP worker {os.getpid()} successfully set CUDA device")
+        
+        # Use the same pattern as real tensor parallel system
+        # Create backend using the factory function
+        from exllamav3.model.model_tp_backend import create_tp_backend
+        
+        backend = create_tp_backend(
+            backend_type=backend_args["type"],
+            device=device_idx,
+            active_devices=active_devices,
+            output_device=active_devices[0],  # First device is output
+            init_method=backend_args["init_method"],
+            master=(device_idx == active_devices[0]),
+            uuid=backend_args["uuid"]
+        )
+        
+        print(f"DEBUG: Real TP worker {os.getpid()} backend created successfully: {type(backend).__name__}")
+        
+        # Add synchronization delay to ensure both processes are ready
+        time.sleep(2.0)
+        
+        # Perform real tensor parallel operations (like the real system would do)
+        print(f"DEBUG: Real TP worker {os.getpid()} performing tensor operations")
+        
+        # Create test tensors
+        tensor1 = torch.randn(1000, device=device_idx)
+        tensor2 = torch.randn(1000, device=device_idx)
+        
+        # Store original values for verification
+        original_sum = tensor1.sum() + tensor2.sum()
+        
+        # Perform barrier synchronization first
+        print(f"DEBUG: Real TP worker {os.getpid()} performing barrier")
+        backend.fwd_barrier()
+        print(f"DEBUG: Real TP worker {os.getpid()} barrier completed")
+        
+        # Perform all-reduce operations
+        print(f"DEBUG: Real TP worker {os.getpid()} performing all_reduce")
+        backend.all_reduce(tensor1)
+        backend.all_reduce(tensor2)
+        
+        # Verify the operation completed correctly
+        final_sum = tensor1.sum() + tensor2.sum()
+        assert torch.isclose(final_sum, original_sum, rtol=1e-5), f"Sum verification failed: {final_sum} vs {original_sum}"
+        
+        print(f"DEBUG: Real TP worker {os.getpid()} operations completed successfully")
+        
+        # Clean up backend
+        backend.close()
+        
+        result_queue.put(('success', device_idx, f"Real tensor parallel operations completed on device {device_idx}"))
+        
+    except Exception as e:
+        print(f"DEBUG: Real TP worker {os.getpid()} failed with error: {e}")
+        import traceback
+        print(f"DEBUG: Full traceback: {traceback.format_exc()}")
+        result_queue.put(('error', device_idx, str(e)))
+
 
 if __name__ == "__main__":
+    # Run the real tensor parallel test
+    try:
+        results = run_real_tp_test()
+        print(f"SUCCESS: Real tensor parallel test completed with results: {results}")
+    except Exception as e:
+        print(f"FAILED: Real tensor parallel test failed: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # Also run pytest
     pytest.main([__file__, "-v"])
