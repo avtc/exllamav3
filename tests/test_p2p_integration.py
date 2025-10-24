@@ -1237,7 +1237,7 @@ class TestMultiProcessIntegration:
                     }
                     
                     print(f"DEBUG: Attempting model initialization with P2P backend")
-                    model, config, cache, tokenizer = model_init.init_from_dict(model_init_args)
+                    model, config, cache, tokenizer = model_init.init(model_init_args)
                     print(f"DEBUG: Model initialized successfully with backend: {type(model.tp_backend).__name__}")
                     
                     # Verify it's actually using P2P backend
