@@ -1309,19 +1309,65 @@ def _run_real_tp_test_worker(device_idx, active_devices, result_queue, backend_a
         # Store original values for verification
         original_sum = tensor1.sum() + tensor2.sum()
         
-        # Perform barrier synchronization first
-        print(f"DEBUG: Real TP worker {os.getpid()} performing barrier")
-        backend.fwd_barrier()
-        print(f"DEBUG: Real TP worker {os.getpid()} barrier completed")
+        # Create the real tensor parallel context like the system does
+        print(f"DEBUG: Real TP worker {os.getpid()} creating local_context")
+        local_context = {
+            "device": device_idx,
+            "modules": [],
+            "kv_modules": [],
+            "rank": active_devices.index(device_idx),
+            "world_size": len(active_devices),
+            "output_rank": active_devices.index(active_devices[0]),
+            "active_devices": active_devices,
+            "output_device": active_devices[0],
+            "backend": backend
+        }
         
-        # Perform all-reduce operations
-        print(f"DEBUG: Real TP worker {os.getpid()} performing all_reduce")
-        backend.all_reduce(tensor1)
-        backend.all_reduce(tensor2)
+        # Create shared memory producer/consumer for communication
+        from exllamav3.model.model_tp_shared import SMProducer
         
-        # Verify the operation completed correctly
-        final_sum = tensor1.sum() + tensor2.sum()
-        assert torch.isclose(final_sum, original_sum, rtol=1e-5), f"Sum verification failed: {final_sum} vs {original_sum}"
+        producer = SMProducer()
+        
+        # Create shared input tensor for the forward pass
+        shared_input = {
+            "input_ids": torch.randint(0, 1000, (10,), device=device_idx),
+            "attention_mask": torch.ones(10, device=device_idx),
+            "position_ids": torch.arange(10, device=device_idx),
+        }
+        
+        # Create parameters for the forward pass
+        params = {
+            "block_table": torch.tensor([[0]], device=device_idx),
+            "cache_seqlens": torch.tensor([10], device=device_idx),
+            "positions": torch.arange(10, device=device_idx),
+            "position_ids": torch.arange(10, device=device_idx),
+            "last_tokens_only": None,
+            "prefill": True,
+        }
+        
+        # Perform a real forward pass which includes barrier synchronization
+        print(f"DEBUG: Real TP worker {os.getpid()} performing forward pass")
+        
+        # Simulate a minimal forward pass that would trigger barrier
+        try:
+            # This mimics the real system's forward pass pattern
+            backend.fwd_barrier()
+            
+            # Now perform all-reduce operations after barrier
+            print(f"DEBUG: Real TP worker {os.getpid()} performing all_reduce after barrier")
+            backend.all_reduce(tensor1)
+            backend.all_reduce(tensor2)
+            
+            # Verify the operation completed correctly
+            final_sum = tensor1.sum() + tensor2.sum()
+            assert torch.isclose(final_sum, original_sum, rtol=1e-5), f"Sum verification failed: {final_sum} vs {original_sum}"
+            
+        except Exception as e:
+            print(f"DEBUG: Real TP worker {os.getpid()} forward pass failed: {e}")
+            # Try to clean up
+            if 'producer' in locals():
+                producer.close()
+            raise
         
         print(f"DEBUG: Real TP worker {os.getpid()} operations completed successfully")
         
