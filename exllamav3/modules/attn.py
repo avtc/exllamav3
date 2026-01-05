@@ -339,9 +339,7 @@ class Attention(Module):
                     x = self.decode_flash_attn_nc(x, bsz, seqlen, params)
                 case _:
                     raise ValueError(f"Unknown attn_mode: {attn_mode}")
-            # OPT2: Skip all-reduce here if fused all-reduce is enabled
-            # The all-reduce will be done once at the end of TransformerBlock
-            if self.tp_reduce and not params.get("_skip_tp_reduce"):
+            if self.tp_reduce:
                 params["backend"].all_reduce(x)
 
         return to2(x, out_dtype, self.out_dtype)

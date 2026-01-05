@@ -30,31 +30,6 @@
 
 ---
 
-## Phase 2: Medium Effort Optimizations
-
-### OPT2: Fuse Attention + MoE All-Reduce ⚡
-
-**Expected Speedup:** 30-50%
-**Effort:** 2-3 hours
-**Status:** ✅ **IMPLEMENTED** - Ready for testing via TabbyAPI
-
-#### Tasks:
-
-- [x] **2.1** Add ENABLE_FUSED_ALL_REDUCE flag (already in OptimizationFlags)
-- [x] **2.2** Modify TransformerBlock to skip all-reduce in sub-modules
-- [x] **2.3** Implement single all-reduce at end of block
-- [x] **2.4** Update Attention module to respect _skip_tp_reduce flag
-- [x] **2.5** Update MLP module to respect _skip_tp_reduce flag
-- [x] **2.6** Update GatedMLP module to respect _skip_tp_reduce flag
-- [x] **2.7** Update BlockSparseMLP module to respect _skip_tp_reduce flag
-- [x] **2.8** Add fused all-reduce tracking to statistics
-- [x] **2.9** Add is_fused parameter to all_reduce() method
-- [ ] **2.10** Test with fusion enabled (via TabbyAPI)
-- [ ] **2.11** Benchmark and measure speedup
-- [ ] **2.12** Document results
-
----
-
 ### OPT3: Increase CPU All-Reduce Buffer (When GPU Path Can't Be Used)
 
 **Expected Speedup:** 5-10% (when CPU path is used)

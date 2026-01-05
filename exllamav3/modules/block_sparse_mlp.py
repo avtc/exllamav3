@@ -729,9 +729,8 @@ class BlockSparseMLP(Module):
             else:
                 final_hidden_states += y
 
-        # OPT2: Skip all-reduce here if fused all-reduce is enabled
-        # The all-reduce will be done once at the end of TransformerBlock
-        if self.tp_reduce and not params.get("_skip_tp_reduce"):
+        # Output reduction
+        if self.tp_reduce:
             params["backend"].all_reduce(
                 final_hidden_states,
                 (self.intermediate_size > 0 and self.num_local_experts > 0) or bool(self.shared_experts)

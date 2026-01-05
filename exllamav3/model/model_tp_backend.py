@@ -44,7 +44,7 @@ class OptimizationFlags:
     All flags can be controlled via environment variables:
     - EXLLAMA_TP_GPU_REDUCE: Enable GPU all-reduce (default: 1)
     - EXLLAMA_TP_GPU_REDUCE_THRESH: Threshold in elements (default: 65536)
-    - EXLLAMA_TP_FUSED_REDUCE: Enable fused all-reduce (default: 1)
+    - EXLLAMA_TP_FUSED_REDUCE: Enable fused all-reduce (default: 1, not yet implemented)
     - EXLLAMA_TP_CPU_BUFFER_MULT: CPU buffer multiplier (default: 4)
     """
 
@@ -57,9 +57,7 @@ class OptimizationFlags:
     # 0 = always use GPU, 65536 = 256KB for fp16 (default)
     GPU_ALL_REDUCE_THRESHOLD = int(os.getenv("EXLLAMA_TP_GPU_REDUCE_THRESH", "65536"))
 
-    # OPT2: Fuse attention and MoE all-reduce into single operation
-    # Combines 2 all-reduces per layer (attn + MLP/MoE) into 1 all-reduce
-    # Reduces all-reduce frequency by ~50%
+    # OPT2: Fuse attention and MoE all-reduce into single operation (TODO)
     ENABLE_FUSED_ALL_REDUCE = os.getenv("EXLLAMA_TP_FUSED_REDUCE", "1") == "1"
 
     # OPT3: CPU all-reduce buffer multiplier (when GPU path can't be used)
@@ -86,7 +84,7 @@ class OptimizationFlags:
         log_tp(-1, f"TP Optimization Settings:")
         log_tp(-1, f"  GPU all-reduce: {cls.ENABLE_GPU_ALL_REDUCE}")
         log_tp(-1, f"  GPU threshold: {cls.GPU_ALL_REDUCE_THRESHOLD} elements")
-        log_tp(-1, f"  Fused all-reduce: {cls.ENABLE_FUSED_ALL_REDUCE}")
+        log_tp(-1, f"  Fused all-reduce: {cls.ENABLE_FUSED_ALL_REDUCE} (not yet implemented)")
         buffer_mb = get_cpu_reduce_buffer_size(cls.CPU_REDUCE_BUFFER_MULTIPLIER) / (1024*1024)
         log_tp(-1, f"  CPU buffer: {buffer_mb:.1f} MB ({cls.CPU_REDUCE_BUFFER_MULTIPLIER}x default)")
         log_tp(-1, f"  Batched sampling: {cls.ENABLE_BATCHED_SAMPLING}")
@@ -235,10 +233,8 @@ class TPBackendNative:
     # Class-level counters for tracking all-reduce usage
     _gpu_reduce_count = 0
     _cpu_reduce_count = 0
-    _fused_reduce_count = 0
     _total_bytes_gpu = 0
     _total_bytes_cpu = 0
-    _total_bytes_fused = 0
 
     def __init__(
         self,
@@ -426,22 +422,16 @@ class TPBackendNative:
             )
 
 
-    def all_reduce(self, tensor: torch.Tensor, contribution: bool = True, is_fused: bool = False):
+    def all_reduce(self, tensor: torch.Tensor, contribution: bool = True):
         """
         All-reduce operation with configurable CPU/GPU backend.
 
         GPU path (OPT1): Direct GPU-to-GPU via P2P/PCIe, no CPU involvement
         CPU path: GPU → RAM → CPU → RAM → GPU (slower, but works without P2P)
-        Fused (OPT2): Combines attention + MLP/MoE all-reduce into one operation
 
         Backend selection is controlled by:
         - OptimizationFlags.ENABLE_GPU_ALL_REDUCE
         - OptimizationFlags.GPU_ALL_REDUCE_THRESHOLD
-
-        Args:
-            tensor: Input tensor to all-reduce
-            contribution: Whether this rank contributes to the sum (CPU path only)
-            is_fused: True if this is a fused attention+MLP all-reduce (OPT2)
         """
 
         # Determine if we should use GPU all-reduce
@@ -458,18 +448,12 @@ class TPBackendNative:
             # Only limitation: requires P2P or NVLink for optimal performance
 
             # Track statistics
-            if is_fused:
-                TPBackendNative._fused_reduce_count += 1
-                TPBackendNative._total_bytes_fused += tensor_bytes
-            else:
-                TPBackendNative._gpu_reduce_count += 1
-                TPBackendNative._total_bytes_gpu += tensor_bytes
+            TPBackendNative._gpu_reduce_count += 1
+            TPBackendNative._total_bytes_gpu += tensor_bytes
 
             # Log first few calls for debugging
-            total_calls = TPBackendNative._gpu_reduce_count + TPBackendNative._fused_reduce_count
-            if total_calls <= 5 or (is_fused and TPBackendNative._fused_reduce_count <= 3):
-                fused_str = "FUSED " if is_fused else ""
-                log_tp(self.device, f"All-reduce: {fused_str}GPU path ({tensor.numel()} elems, {tensor_bytes//1024} KB)")
+            if TPBackendNative._gpu_reduce_count <= 5:
+                log_tp(self.device, f"All-reduce: GPU path ({tensor.numel()} elems, {tensor_bytes//1024} KB)")
 
             ext.pg_all_reduce(
                 self.ptr_g,
@@ -511,25 +495,21 @@ class TPBackendNative:
     @classmethod
     def get_all_reduce_stats(cls):
         """Get statistics on all-reduce usage"""
-        total = cls._gpu_reduce_count + cls._cpu_reduce_count + cls._fused_reduce_count
+        total = cls._gpu_reduce_count + cls._cpu_reduce_count
         if total == 0:
-            return {"total": 0, "gpu": 0, "cpu": 0, "fused": 0, "gpu_pct": 0, "cpu_pct": 0, "fused_pct": 0}
+            return {"total": 0, "gpu": 0, "cpu": 0, "gpu_pct": 0, "cpu_pct": 0}
 
         gpu_pct = 100 * cls._gpu_reduce_count / total
         cpu_pct = 100 * cls._cpu_reduce_count / total
-        fused_pct = 100 * cls._fused_reduce_count / total
 
         return {
             "total": total,
             "gpu": cls._gpu_reduce_count,
             "cpu": cls._cpu_reduce_count,
-            "fused": cls._fused_reduce_count,
             "gpu_pct": gpu_pct,
             "cpu_pct": cpu_pct,
-            "fused_pct": fused_pct,
             "total_mb_gpu": cls._total_bytes_gpu / (1024*1024),
             "total_mb_cpu": cls._total_bytes_cpu / (1024*1024),
-            "total_mb_fused": cls._total_bytes_fused / (1024*1024),
         }
 
     @classmethod
@@ -540,16 +520,7 @@ class TPBackendNative:
             log_tp(-1, f"All-reduce statistics:")
             log_tp(-1, f"  Total calls: {stats['total']}")
             log_tp(-1, f"  GPU path: {stats['gpu']} ({stats['gpu_pct']:.1f}%) - {stats['total_mb_gpu']:.1f} MB")
-            log_tp(-1, f"  FUSED path: {stats['fused']} ({stats['fused_pct']:.1f}%) - {stats['total_mb_fused']:.1f} MB")
             log_tp(-1, f"  CPU path: {stats['cpu']} ({stats['cpu_pct']:.1f}%) - {stats['total_mb_cpu']:.1f} MB")
-
-            # Calculate reduction efficiency
-            if stats["fused"] > 0:
-                # Without fusion: would be 2x calls (attn + MLP)
-                unfused_calls = stats["gpu"] + stats["cpu"] + 2 * stats["fused"]
-                actual_calls = stats["total"]
-                efficiency = 100 * (1 - actual_calls / unfused_calls)
-                log_tp(-1, f"  Fusion efficiency: {efficiency:.1f}% reduction in all-reduce calls")
 
 
 

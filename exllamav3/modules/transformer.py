@@ -6,7 +6,6 @@ from ..model.config import Config
 from . import Module, RMSNorm, LayerNorm, Attention, GatedDeltaNet, GatedMLP, MLP, BlockSparseMLP
 from ..conversion.allocation import allocate_transformer
 from ..util import profile_opt
-from ..model.model_tp_backend import OptimizationFlags
 
 class TransformerBlock(Module):
 
@@ -60,67 +59,26 @@ class TransformerBlock(Module):
         out_dtype: torch.dtype | None = None
     ) -> torch.Tensor:
 
-        # Check if we should use fused all-reduce (OPT2)
-        # Fused all-reduce combines attention and MLP/MoE all-reduce into a single operation
-        use_fused_reduce = (
-            OptimizationFlags.ENABLE_FUSED_ALL_REDUCE and
-            params.get("backend") is not None and
-            self.attn is not None and
-            self.mlp is not None
-        )
-
-        # Set flag to skip individual all-reduces in sub-modules
-        if use_fused_reduce:
-            params["_skip_tp_reduce"] = True
-
-        # Track original input for residual connections
-        x_orig = x
-        attn_out = None
-        mlp_out = None
-
-        # Attention block
         if self.attn:
             if self.attn_norm:
                 y = self.attn_norm.forward(x, params, out_dtype = torch.half)
             else:
                 y = x.half()
             y = self.attn.forward(y, params)
-            if params.get("prefill"):
-                params.pop("_skip_tp_reduce", None)
-                return x_orig
+            if params.get("prefill"): return x
             if self.attn_post_norm:
                 y = self.attn_post_norm.forward(y, params)
-            attn_out = x + y
+            x += y
 
-        # MLP/MoE block
         if self.mlp:
             if self.mlp_norm:
-                y = self.mlp_norm.forward(attn_out if attn_out is not None else x, params, out_dtype = torch.half)
+                y = self.mlp_norm.forward(x, params, out_dtype = torch.half)
             else:
-                y = (attn_out if attn_out is not None else x).half()
+                y = x.half()
             y = self.mlp.forward(y, params)
             if self.mlp_post_norm:
                 y = self.mlp_post_norm.forward(y, params)
-            mlp_out = (attn_out if attn_out is not None else x) + y
-
-        # Clear the skip flag
-        if use_fused_reduce:
-            params.pop("_skip_tp_reduce", None)
-
-        # Fused all-reduce: single operation for both attention and MLP/MoE
-        if use_fused_reduce and params.get("backend") is not None:
-            # Determine final output to all-reduce
-            if mlp_out is not None:
-                # Both attention and MLP exist - mlp_out already contains both residuals
-                x = mlp_out
-            elif attn_out is not None:
-                x = attn_out
-
-            # Single all-reduce for the combined output (OPT2: fused operation)
-            params["backend"].all_reduce(x, is_fused=True)
-        else:
-            # Original behavior: individual all-reduces already happened in sub-modules
-            x = mlp_out if mlp_out is not None else (attn_out if attn_out is not None else x_orig)
+            x += y
 
         return to2(x, out_dtype, self.out_dtype)
 
