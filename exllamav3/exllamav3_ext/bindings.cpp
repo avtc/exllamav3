@@ -83,6 +83,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     }, "pg_get_ipc_handle");
 
     m.def("pg_open_p2p_handles", &pg_open_p2p_handles, "pg_open_p2p_handles");
+    m.def("pg_mem_alloc", &pg_mem_alloc, "pg_mem_alloc");
+    m.def("pg_mem_free", &pg_mem_free, "pg_mem_free");
 
     m.def("pg_broadcast", &pg_broadcast, "pg_broadcast");
     m.def("pg_broadcast_ll", &pg_broadcast_ll, "pg_broadcast_ll");

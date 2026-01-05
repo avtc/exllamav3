@@ -47,3 +47,5 @@ void pg_set_p2p_handle(uintptr_t ctx, int device, const char* handle_bytes);
 void pg_get_ipc_handle(uintptr_t ptr, char* handle_out);
 void pg_open_p2p_handles(uintptr_t ctx, int my_device, uintptr_t my_ptr);
 void* pg_get_p2p_ptr(int device);
+uintptr_t pg_mem_alloc(size_t size);
+void pg_mem_free(uintptr_t ptr);
