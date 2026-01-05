@@ -287,6 +287,9 @@ void pg_all_reduce_p2p_kernel
         dst += blockDim.x * 16;
     }
     
+    // Ensure writes to P2P buffer are visible to peers
+    __threadfence_system();
+
     // 2. Sync
     pg_barrier_inner(ctx, device_mask, this_device, master_device, abort_flag);
     if (*abort_flag) return;
@@ -327,6 +330,9 @@ void pg_all_reduce_p2p_kernel
         
         *((float4*)(data_ptr + offset)) = acc;
     }
+
+    // Ensure output writes are visible
+    __threadfence_system();
 
     // Finished. Sync/Barrier
     pg_barrier_inner(ctx, device_mask, this_device, master_device, abort_flag);
