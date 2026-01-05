@@ -59,37 +59,22 @@
 
 **Expected Speedup:** 5-10% (when CPU path is used)
 **Effort:** 1 hour
-**Status:** ⏳ TODO
+**Status:** ✅ **IMPLEMENTED** - Ready for testing via TabbyAPI
 
 #### Tasks:
 
-- [ ] **3.1** Add CPU_REDUCE_BUFFER_MULTIPLIER flag
-- [ ] **3.2** Implement dynamic buffer sizing
-- [ ] **3.3** Test with larger buffer
-- [ ] **3.4** Document results
+- [x] **3.1** Add CPU_REDUCE_BUFFER_MULTIPLIER flag (already in OptimizationFlags)
+- [x] **3.2** Implement dynamic buffer sizing function
+- [x] **3.3** Update TPBackendNative to use dynamic buffer size
+- [x] **3.4** Update all_reduce_cpu to use instance variable
+- [x] **3.5** Update run_cpu_reduce_jobs to use instance variable
+- [x] **3.6** Add logging to show buffer size
+- [ ] **3.7** Test with larger buffer
+- [ ] **3.8** Document results
 
 ---
 
-## Phase 2: Medium Effort Optimizations
-
-### OPT2: Fuse Attention + MoE All-Reduce ⚡
-
-**Expected Speedup:** 30-50%
-**Effort:** 2-3 hours
-**Status:** ⏳ TODO
-
-#### Tasks:
-
-- [ ] **2.1** Add ENABLE_FUSED_ALL_REDUCE flag
-- [ ] **2.2** Modify TransformerBlock to skip all-reduce in sub-modules
-- [ ] **2.3** Implement single all-reduce at end of block
-- [ ] **2.4** Update Attention module to respect _skip_tp_reduce flag
-- [ ] **2.5** Update MoE module to respect _skip_tp_reduce flag
-- [ ] **2.6** Test with fusion enabled
-- [ ] **2.7** Benchmark and measure speedup
-- [ ] **2.8** Document results
-
----
+## Phase 3: Additional Optimizations (Future Work)
 
 ### OPT4: Eliminate Redundant Barrier
 

@@ -10,8 +10,30 @@ from ..util import log_tp
 
 GLOBALS_SIZE = 128*1024
 SHBUF_SIZE = 16 * 1024 ** 2
-SHBUF_SIZE_R = 17 * 128 * 1024
 SHBUF_SIZE_S = 16 * 1024
+
+# Default CPU reduce buffer size (will be scaled by multiplier)
+DEFAULT_SHBUF_SIZE_R = 17 * 128 * 1024  # 2.1 MB
+
+
+def get_cpu_reduce_buffer_size(multiplier: int = 1) -> int:
+    """
+    Calculate CPU all-reduce buffer size based on multiplier.
+
+    OPT3: Larger buffer allows batching of multiple all-reduces,
+    reducing CPU round-trip overhead.
+
+    Args:
+        multiplier: Buffer size multiplier (default: 1)
+
+    Returns:
+        Buffer size in bytes
+    """
+    return multiplier * DEFAULT_SHBUF_SIZE_R
+
+
+# Initial buffer size (will be recalculated when backend is initialized)
+SHBUF_SIZE_R = get_cpu_reduce_buffer_size(multiplier=1)
 MAX_CPU_REDUCE = SHBUF_SIZE_R // 17 // 256 * 256
 
 
@@ -41,7 +63,9 @@ class OptimizationFlags:
     ENABLE_FUSED_ALL_REDUCE = os.getenv("EXLLAMA_TP_FUSED_REDUCE", "1") == "1"
 
     # OPT3: CPU all-reduce buffer multiplier (when GPU path can't be used)
-    # Larger buffer allows batching of reductions
+    # Larger buffer allows batching of multiple reductions, reducing CPU round-trips
+    # Multiplier of 4 = 8.4 MB buffer (default: 4)
+    # Larger buffers help when GPU all-reduce can't be used for small tensors
     CPU_REDUCE_BUFFER_MULTIPLIER = int(os.getenv("EXLLAMA_TP_CPU_BUFFER_MULT", "4"))
 
     @classmethod
@@ -51,7 +75,8 @@ class OptimizationFlags:
         log_tp(-1, f"  GPU all-reduce: {cls.ENABLE_GPU_ALL_REDUCE}")
         log_tp(-1, f"  GPU threshold: {cls.GPU_ALL_REDUCE_THRESHOLD} elements")
         log_tp(-1, f"  Fused all-reduce: {cls.ENABLE_FUSED_ALL_REDUCE}")
-        log_tp(-1, f"  CPU buffer multiplier: {cls.CPU_REDUCE_BUFFER_MULTIPLIER}x")
+        buffer_mb = get_cpu_reduce_buffer_size(cls.CPU_REDUCE_BUFFER_MULTIPLIER) / (1024*1024)
+        log_tp(-1, f"  CPU buffer: {buffer_mb:.1f} MB ({cls.CPU_REDUCE_BUFFER_MULTIPLIER}x default)")
 
 
 class TPBackend:
@@ -225,10 +250,17 @@ class TPBackendNative:
         self.cpu = cpu
         self.cpu_is_pinned = False
 
+        # OPT3: Calculate dynamic CPU reduce buffer size
+        # Get buffer multiplier from OptimizationFlags
+        buffer_multiplier = OptimizationFlags.CPU_REDUCE_BUFFER_MULTIPLIER
+
         size_g = GLOBALS_SIZE
         size_b = self.shbuf_size
-        size_r = SHBUF_SIZE_R
+        size_r = get_cpu_reduce_buffer_size(buffer_multiplier)  # Dynamic based on multiplier
         size_s = SHBUF_SIZE_S
+
+        # Store buffer size as instance variable for use in all_reduce_cpu
+        self.shbuf_size_r = size_r
 
         if master:
             # Log optimization settings
@@ -240,7 +272,7 @@ class TPBackendNative:
             self.shm_b = shared_memory.SharedMemory(create = True, size = size_b, name = self.shm_b_name)
             log_tp(device, f"Created SHM: {self.shm_b_name}, {size_b} bytes")
             self.shm_r = shared_memory.SharedMemory(create = True, size = size_r, name = self.shm_r_name)
-            log_tp(device, f"Created SHM: {self.shm_r_name}, {size_r} bytes")
+            log_tp(device, f"Created SHM: {self.shm_r_name}, {size_r} bytes (OPT3: {buffer_multiplier}x buffer)")
             self.shm_s = shared_memory.SharedMemory(create = True, size = size_s, name = self.shm_s_name)
             log_tp(device, f"Created SHM: {self.shm_s_name}, {size_s} bytes")
             self.buf_g = np.ndarray((size_g,), dtype = np.uint8, buffer = self.shm_g.buf)
@@ -457,7 +489,7 @@ class TPBackendNative:
                 tensor,
                 contribution,
                 self.ptr_r,
-                SHBUF_SIZE_R,
+                self.shbuf_size_r,  # Use instance variable (OPT3: dynamic buffer size)
                 self.master,
                 self.abort_flag
             )
@@ -542,7 +574,7 @@ class TPBackendNative:
         ext.run_cpu_reduce_jobs(
             self.ptr_g,
             self.ptr_r,
-            SHBUF_SIZE_R,
+            self.shbuf_size_r,  # Use instance variable (OPT3: dynamic buffer size)
         )
 
 
