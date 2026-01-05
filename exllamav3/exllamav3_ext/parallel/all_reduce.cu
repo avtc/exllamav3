@@ -350,8 +350,6 @@ void pg_all_reduce
     size_t rank_shbuf_capacity = shbuf_size / num_ranks;
     // 512KB threshold
     bool direct_reduce = (data_size <= rank_shbuf_capacity) && (data_size <= 512 * 1024);
-    
-    uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
 
     if (direct_reduce)
     {
