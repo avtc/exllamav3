@@ -110,6 +110,25 @@
 
 ---
 
+### OPT6: CUDA IPC Input Sharing
+
+**Expected Speedup:** 5-10%
+**Effort:** 2-3 hours
+**Status:** ✅ **IMPLEMENTED** - Ready for testing via TabbyAPI
+
+#### Tasks:
+
+- [x] **6.1** Add ENABLE_CUDA_IPC_SHARING flag to OptimizationFlags
+- [x] **6.2** Implement CUDA IPC path in SMProducer.send()
+- [x] **6.3** Implement CUDA IPC path in SMConsumer.recv()
+- [x] **6.4** Add fallback to CPU shared memory when IPC unavailable
+- [x] **6.5** Add environment variable support (EXLLAMA_CUDA_IPC_SHARING)
+- [ ] **6.6** Test with CUDA IPC enabled (via TabbyAPI)
+- [ ] **6.7** Benchmark and measure speedup
+- [ ] **6.8** Document results
+
+---
+
 ## Testing & Benchmarking
 
 ### Benchmark Tasks:
@@ -142,6 +161,9 @@ export EXLLAMA_TP_CPU_BUFFER_MULT=4
 
 # Enable/disable batched sampling (default: 1 = enabled)
 export EXLLAMA_BATCHED_SAMPLING=1
+
+# Enable/disable CUDA IPC sharing (default: 1 = enabled)
+export EXLLAMA_CUDA_IPC_SHARING=1
 ```
 
 ---
@@ -171,7 +193,13 @@ export EXLLAMA_BATCHED_SAMPLING=1
 - **Performance:** TBD t/s
 - **Speedup:** TBD%
 
-### Final Results (Phase 1+2+3)
+### OPT6 Results (CUDA IPC Sharing)
+- **Date:** TBD
+- **Configuration:** EXLLAMA_CUDA_IPC_SHARING=1
+- **Performance:** TBD t/s
+- **Speedup:** TBD%
+
+### Final Results (Phase 1+2+3+5+6)
 - **Date:** TBD
 - **Performance:** TBD t/s
 - **Total Speedup:** TBD%

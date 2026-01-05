@@ -74,6 +74,12 @@ class OptimizationFlags:
     # Expected speedup: 20-30% for multi-sequence jobs
     ENABLE_BATCHED_SAMPLING = os.getenv("EXLLAMA_BATCHED_SAMPLING", "1") == "1"
 
+    # OPT6: CUDA IPC for input sharing to avoid GPU-CPU-GPU round-trip
+    # Uses direct GPU-to-GPU memory sharing when available
+    # Falls back to CPU shared memory if IPC not available
+    # Expected speedup: 5-10% for multi-GPU setups
+    ENABLE_CUDA_IPC_SHARING = os.getenv("EXLLAMA_CUDA_IPC_SHARING", "1") == "1"
+
     @classmethod
     def log_settings(cls):
         """Log current optimization settings"""
@@ -84,6 +90,7 @@ class OptimizationFlags:
         buffer_mb = get_cpu_reduce_buffer_size(cls.CPU_REDUCE_BUFFER_MULTIPLIER) / (1024*1024)
         log_tp(-1, f"  CPU buffer: {buffer_mb:.1f} MB ({cls.CPU_REDUCE_BUFFER_MULTIPLIER}x default)")
         log_tp(-1, f"  Batched sampling: {cls.ENABLE_BATCHED_SAMPLING}")
+        log_tp(-1, f"  CUDA IPC sharing: {cls.ENABLE_CUDA_IPC_SHARING}")
 
 
 class TPBackend:

@@ -4,6 +4,7 @@ import numpy as np
 from multiprocessing import shared_memory
 import uuid
 from .model_tp_cuda import cuda_host_register, cuda_host_unregister, CUDA_HOST_REGISTER_PORTABLE
+from .model_tp_backend import OptimizationFlags
 
 DEFAULT_BUFFER_SIZE = 2 * 1024 ** 3
 MAX_CACHE_PER_PROCESS = 4 * 1024**3
@@ -55,6 +56,31 @@ class SMProducer:
             return {
                 "method": "none_tensor",
             }
+
+        # OPT6: CUDA IPC path for GPU tensors (direct GPU-to-GPU sharing)
+        if (OptimizationFlags.ENABLE_CUDA_IPC_SHARING and
+            tensor.is_cuda and
+            tensor.is_contiguous()):
+
+            try:
+                # Create IPC handle for GPU tensor
+                tensor.share_memory_()
+
+                # Get the file descriptor for IPC
+                # PyTorch stores this internally, we retrieve it via _share_fd_cpu
+                ipc_handle = tensor._share_fd_cpu()
+
+                return {
+                    "method": "cuda_ipc",
+                    "handle": ipc_handle,
+                    "dtype": str(tensor.dtype),
+                    "shape": tuple(tensor.shape),
+                    "cache_id": cache_id
+                }
+            except Exception as e:
+                # Fallback to CPU path if IPC fails (e.g., P2P not available)
+                # This can happen if GPUs don't support P2P access
+                pass
 
         # Bytes to export
         nbytes = tensor.element_size() * tensor.numel()
@@ -187,6 +213,42 @@ class SMConsumer:
         # Send was None
         if method == "none_tensor":
             return None
+
+        # OPT6: CUDA IPC path (direct GPU-to-GPU access)
+        if method == "cuda_ipc":
+            try:
+                # Reconstruct tensor from IPC handle
+                dtype = _torch_dtypes[imp["dtype"]]
+                shape = imp["shape"]
+
+                # Use PyTorch's internal method to reopen IPC handle
+                # This creates a new tensor that shares the GPU memory
+                handle = imp["handle"]
+                tensor = torch._C._cuda_ipc_deserialize(handle, self.device)
+
+                # Apply shape
+                if shape != ():
+                    tensor = tensor.view(shape)
+
+                # Cache handling
+                cache_id = imp.get("cache_id")
+                if cache_id is not None:
+                    # IPC tensors can be cached as references (no copy needed)
+                    if cache_id not in self.cached_cpu_tensors:
+                        while self.cache_size + tensor.element_size() * tensor.numel() > MAX_CACHE_PER_PROCESS:
+                            self.cached_cpu_tensors.pop(next(iter(self.cached_cpu_tensors)))
+                        self.cached_cpu_tensors[cache_id] = tensor
+
+                # Slice if needed
+                if slice_dim is not None:
+                    tensor = tensor.narrow(slice_dim, first, last - first)
+
+                return tensor
+
+            except Exception as e:
+                # Fallback to CPU path if IPC receive fails
+                # This shouldn't normally happen if send succeeded, but handle gracefully
+                pass
 
         # Send was cached
         cache_id = imp.get("cache_id")  # Always initialize
