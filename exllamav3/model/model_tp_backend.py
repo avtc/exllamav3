@@ -77,6 +77,11 @@ class OptimizationFlags:
     # Falls back to CPU shared memory if IPC not available
     # Expected speedup: 5-10% for multi-GPU setups
     ENABLE_CUDA_IPC_SHARING = os.getenv("EXLLAMA_CUDA_IPC_SHARING", "1") == "1"
+    
+    # OPT7: Use busy-wait instead of sleep for GPU synchronization
+    # Reduces latency for small transfers, critical for token generation.
+    # Recommended for P2P/NVLink setups where low latency is key.
+    ENABLE_BUSY_WAIT = os.getenv("EXLLAMA_TP_BUSY_WAIT", "0") == "1"
 
     @classmethod
     def log_settings(cls):
@@ -89,6 +94,7 @@ class OptimizationFlags:
         log_tp(-1, f"  CPU buffer: {buffer_mb:.1f} MB ({cls.CPU_REDUCE_BUFFER_MULTIPLIER}x default)")
         log_tp(-1, f"  Batched sampling: {cls.ENABLE_BATCHED_SAMPLING}")
         log_tp(-1, f"  CUDA IPC sharing: {cls.ENABLE_CUDA_IPC_SHARING}")
+        log_tp(-1, f"  Busy wait: {cls.ENABLE_BUSY_WAIT}")
 
 
 class TPBackend:

@@ -76,10 +76,20 @@ void pg_broadcast_kernel
                         pending &= (pending - 1);
                         sleep = SYNC_MIN_SLEEP;
                     }
-                    else __nanosleep(sleep);
-                    if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
-                    else *abort_flag = check_timeout(ctx, deadline, "broadcast");
-                    if (*abort_flag) break;
+                    else
+                    {
+                        if (ctx->busy_wait)
+                        {
+                             if (check_timeout(ctx, deadline, "broadcast")) { *abort_flag = 1; break; }
+                        }
+                        else
+                        {
+                            __nanosleep(sleep);
+                            if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
+                            else *abort_flag = check_timeout(ctx, deadline, "broadcast");
+                            if (*abort_flag) break;
+                        }
+                   }
                 }
             }
             __syncthreads();
@@ -111,10 +121,17 @@ void pg_broadcast_kernel
                 uint64_t sleep = SYNC_MIN_SLEEP;
                 while (ldg_acquire_sys_u32(broadcast_stages_ptr + src_device) <= stage)
                 {
-                    __nanosleep(sleep);
-                    if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
-                    else *abort_flag = check_timeout(ctx, deadline, "broadcast");
-                    if (*abort_flag) break;
+                    if (ctx->busy_wait)
+                    {
+                         if (check_timeout(ctx, deadline, "broadcast")) { *abort_flag = 1; break; }
+                    }
+                    else
+                    {
+                        __nanosleep(sleep);
+                        if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
+                        else *abort_flag = check_timeout(ctx, deadline, "broadcast");
+                        if (*abort_flag) break;
+                    }
                 }
             }
             __syncthreads();

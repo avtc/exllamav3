@@ -72,13 +72,23 @@ void pg_all_reduce_kernel
     {
         if (t == 0)
         {
-            uint32_t sleep = SYNC_MIN_SLEEP;
-            while ((int) ldg_acquire_sys_u32(stage_ptr) < min_stage)
+            if (ctx->busy_wait)
             {
-                __nanosleep(sleep);
-                if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
-                else *abort_flag = check_timeout(ctx, deadline, "all_reduce");
-                if (*abort_flag) break;
+                while ((int) ldg_acquire_sys_u32(stage_ptr) < min_stage)
+                {
+                     if (check_timeout(ctx, deadline, "all_reduce")) { *abort_flag = 1; break; }
+                }
+            }
+            else
+            {
+                uint32_t sleep = SYNC_MIN_SLEEP;
+                while ((int) ldg_acquire_sys_u32(stage_ptr) < min_stage)
+                {
+                    __nanosleep(sleep);
+                    if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
+                    else *abort_flag = check_timeout(ctx, deadline, "all_reduce");
+                    if (*abort_flag) break;
+                }
             }
         }
         __syncthreads();
@@ -164,10 +174,17 @@ void pg_all_reduce_kernel
                 }
                 else
                 {
-                    __nanosleep(sleep);
-                    if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
-                    else *abort_flag = check_timeout(ctx, deadline, "all_reduce (1)");
-                    if (*abort_flag) break;
+                    if (ctx->busy_wait)
+                    {
+                         if (check_timeout(ctx, deadline, "all_reduce (1)")) { *abort_flag = 1; break; }
+                    }
+                    else
+                    {
+                        __nanosleep(sleep);
+                        if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
+                        else *abort_flag = check_timeout(ctx, deadline, "all_reduce (1)");
+                        if (*abort_flag) break;
+                    }
                 }
             }
         }
@@ -200,10 +217,17 @@ void pg_all_reduce_kernel
                 }
                 else
                 {
-                    __nanosleep(sleep);
-                    if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
-                    else *abort_flag = check_timeout(ctx, deadline, "all_reduce (2)");
-                    if (*abort_flag) break;
+                    if (ctx->busy_wait)
+                    {
+                         if (check_timeout(ctx, deadline, "all_reduce (2)")) { *abort_flag = 1; break; }
+                    }
+                    else
+                    {
+                        __nanosleep(sleep);
+                        if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
+                        else *abort_flag = check_timeout(ctx, deadline, "all_reduce (2)");
+                        if (*abort_flag) break;
+                    }
                 }
             }
 

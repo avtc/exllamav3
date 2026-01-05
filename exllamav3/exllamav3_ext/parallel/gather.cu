@@ -75,13 +75,23 @@ void pg_gather_kernel
     {
         if (t == 0)
         {
-            uint32_t sleep = SYNC_MIN_SLEEP;
-            while ((int) ldg_acquire_sys_u32(stage_ptr) < min_stage)
+            if (ctx->busy_wait)
             {
-                __nanosleep(sleep);
-                if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
-                else *abort_flag = check_timeout(ctx, deadline, "gather (0)");
-                if (*abort_flag) break;
+                while ((int) ldg_acquire_sys_u32(stage_ptr) < min_stage)
+                {
+                     if (check_timeout(ctx, deadline, "gather (0)")) { *abort_flag = 1; break; }
+                }
+            }
+            else
+            {
+                uint32_t sleep = SYNC_MIN_SLEEP;
+                while ((int) ldg_acquire_sys_u32(stage_ptr) < min_stage)
+                {
+                    __nanosleep(sleep);
+                    if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
+                    else *abort_flag = check_timeout(ctx, deadline, "gather (0)");
+                    if (*abort_flag) break;
+                }
             }
         }
         __syncthreads();
@@ -171,10 +181,17 @@ void pg_gather_kernel
                 }
                 else
                 {
-                    __nanosleep(sleep);
-                    if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
-                    else *abort_flag = check_timeout(ctx, deadline, "gather (1)");
-                    if (*abort_flag) break;
+                    if (ctx->busy_wait)
+                    {
+                         if (check_timeout(ctx, deadline, "gather (1)")) { *abort_flag = 1; break; }
+                    }
+                    else
+                    {
+                        __nanosleep(sleep);
+                        if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
+                        else *abort_flag = check_timeout(ctx, deadline, "gather (1)");
+                        if (*abort_flag) break;
+                    }
                 }
             }
         }
@@ -217,10 +234,17 @@ void pg_gather_kernel
             }
             else
             {
-                __nanosleep(sleep);
-                if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
-                else *abort_flag = check_timeout(ctx, deadline, "gather (2)");
-                if (*abort_flag) break;
+                if (ctx->busy_wait)
+                {
+                     if (check_timeout(ctx, deadline, "gather (2)")) { *abort_flag = 1; break; }
+                }
+                else
+                {
+                    __nanosleep(sleep);
+                    if (sleep < SYNC_MAX_SLEEP) sleep <<= 1;
+                    else *abort_flag = check_timeout(ctx, deadline, "gather (2)");
+                    if (*abort_flag) break;
+                }
             }
         }
 

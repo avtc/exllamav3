@@ -23,6 +23,7 @@ struct ReduceJob
 struct alignas(64) PGContext
 {
     uint32_t sync_timeout;
+    uint32_t busy_wait;
     uint32_t barrier_epoch;
     alignas(16) uint32_t barrier_epoch_device[MAX_DEVICES];
     alignas(16) uint32_t broadcast_stage_device[MAX_DEVICES];

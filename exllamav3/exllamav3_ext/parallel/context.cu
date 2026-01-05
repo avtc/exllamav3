@@ -10,6 +10,11 @@ void pg_init_context(uintptr_t ctx)
     PGContext* ctx_ptr = (PGContext*) ctx;
 
     ctx_ptr->sync_timeout = 0;
+    
+    // Check environment variable for busy wait (default: false)
+    const char* busy_wait_env = std::getenv("EXLLAMA_TP_BUSY_WAIT");
+    ctx_ptr->busy_wait = (busy_wait_env && std::string(busy_wait_env) == "1") ? 1 : 0;
+    
     ctx_ptr->barrier_epoch = 1;
 
     for (int i = 0; i < MAX_DEVICES; ++i)
