@@ -339,7 +339,7 @@ class TPBackendNative:
         if self.device >= 0:
             self.abort_flag = torch.zeros((1,), device = self.device, dtype = torch.int)
         else:
-            self.abort_flag = None
+            self.abort_flag = torch.zeros((1,), device = "cpu", dtype = torch.int32)
 
         # Create pinned, shared tensors
         def get_local_tensor(shm_buf, _buffer_size):
