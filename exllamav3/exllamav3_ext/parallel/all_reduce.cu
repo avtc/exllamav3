@@ -426,21 +426,36 @@ void pg_all_reduce
     for (int i : devices) device_mask |= (1 << i);
     long num_ranks = devices.size();
     
-    // Check P2P availability locally
-    P2PPtrs p2p_ptrs;
-    bool all_p2p_valid = true;
-    for(int i=0; i<MAX_DEVICES; ++i) 
+    // Check P2P availability locally (Optimized: Lazy static check)
+    static bool p2p_checked = false;
+    static bool p2p_active = false;
+    static P2PPtrs cached_p2p_ptrs; // Cache pointers once
+    
+    if (!p2p_checked)
     {
-        p2p_ptrs.ptrs[i] = pg_get_p2p_ptr(i);
-        if (((device_mask >> i) & 1) && !p2p_ptrs.ptrs[i]) all_p2p_valid = false;
+        // Check if we have a pointer for OUR device. 
+        // If we do, we assume P2P was set up correctly for this context.
+        if (pg_get_p2p_ptr(this_device)) 
+        {
+             p2p_active = true;
+             // Populate cache
+             for(int i=0; i<MAX_DEVICES; ++i) cached_p2p_ptrs.ptrs[i] = pg_get_p2p_ptr(i);
+             printf("ExLlamaV3: P2P All-Reduce Active\n");
+        }
+        else
+        {
+            // P2P not available or not configured for this rank
+             printf("ExLlamaV3: P2P All-Reduce Not available\n");
+        }
+        p2p_checked = true;
     }
 
-    // Heuristic for direct reduce (Host or P2P)
+    // Heuristic for direct reduce (Host only)
     bool can_use_small_direct = (data_size <= 512 * 1024);
     
     uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
 
-    if (all_p2p_valid && can_use_small_direct)
+    if (p2p_active && data_size <= shbuf_size)
     {
          int threads = MAX_NUM_THREADS;
          if (data_size < threads * 16) threads = CEIL_DIVIDE(data_size, 16);
@@ -455,7 +470,7 @@ void pg_all_reduce
             (void*)& data_ptr,
             (void*)& data_size,
             (void*)& abort_flag_ptr,
-            (void*)& p2p_ptrs
+            (void*)& cached_p2p_ptrs
          };
          
          cudaLaunchCooperativeKernel
@@ -470,7 +485,7 @@ void pg_all_reduce
     }
     else if (can_use_small_direct && (data_size <= shbuf_size / num_ranks))
     {
-        // Host Memory Direct Reduce
+        // Host Memory Direct Reduce (Fallback)
         int threads = MAX_NUM_THREADS;
         if (data_size < threads * 16) threads = CEIL_DIVIDE(data_size, 16);
         threads = ((threads + 31) / 32) * 32;
