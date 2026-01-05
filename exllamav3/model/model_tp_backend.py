@@ -57,9 +57,6 @@ class OptimizationFlags:
     # 0 = always use GPU, 65536 = 256KB for fp16 (default)
     GPU_ALL_REDUCE_THRESHOLD = int(os.getenv("EXLLAMA_TP_GPU_REDUCE_THRESH", "65536"))
 
-    # OPT2: Fuse attention and MoE all-reduce into single operation (TODO)
-    ENABLE_FUSED_ALL_REDUCE = os.getenv("EXLLAMA_TP_FUSED_REDUCE", "1") == "1"
-
     # OPT3: CPU all-reduce buffer multiplier (when GPU path can't be used)
     # Larger buffer allows batching of multiple reductions, reducing CPU round-trips
     # Multiplier of 4 = 8.4 MB buffer (default: 4)
@@ -77,7 +74,7 @@ class OptimizationFlags:
     # Falls back to CPU shared memory if IPC not available
     # Expected speedup: 5-10% for multi-GPU setups
     ENABLE_CUDA_IPC_SHARING = os.getenv("EXLLAMA_CUDA_IPC_SHARING", "1") == "1"
-    
+
     # OPT7: Use busy-wait instead of sleep for GPU synchronization
     # Reduces latency for small transfers, critical for token generation.
     # Recommended for P2P/NVLink setups where low latency is key.
@@ -93,7 +90,6 @@ class OptimizationFlags:
         log_tp(-1, f"TP Optimization Settings:")
         log_tp(-1, f"  GPU all-reduce: {cls.ENABLE_GPU_ALL_REDUCE}")
         log_tp(-1, f"  GPU threshold: {cls.GPU_ALL_REDUCE_THRESHOLD} elements")
-        log_tp(-1, f"  Fused all-reduce: {cls.ENABLE_FUSED_ALL_REDUCE} (not yet implemented)")
         buffer_mb = get_cpu_reduce_buffer_size(cls.CPU_REDUCE_BUFFER_MULTIPLIER) / (1024*1024)
         log_tp(-1, f"  CPU buffer: {buffer_mb:.1f} MB ({cls.CPU_REDUCE_BUFFER_MULTIPLIER}x default)")
         log_tp(-1, f"  Batched sampling: {cls.ENABLE_BATCHED_SAMPLING}")
@@ -397,14 +393,14 @@ class TPBackendNative:
         self.shm_s.close()
         log_tp(self.device, f"Closed {self.shm_s_name}")
         if self.master:
-             log_tp(self.device, f"Master unlink G")
-             self.shm_g.unlink()
-             log_tp(self.device, f"Master unlink B")
-             self.shm_b.unlink()
-             log_tp(self.device, f"Master unlink R")
-             self.shm_r.unlink()
-             log_tp(self.device, f"Master unlink S")
-             self.shm_s.unlink()
+            log_tp(self.device, f"Master unlink G")
+            self.shm_g.unlink()
+            log_tp(self.device, f"Master unlink B")
+            self.shm_b.unlink()
+            log_tp(self.device, f"Master unlink R")
+            self.shm_r.unlink()
+            log_tp(self.device, f"Master unlink S")
+            self.shm_s.unlink()
 
 
         # OPT8: Allocate P2P VRAM buffer
@@ -428,7 +424,7 @@ class TPBackendNative:
     def open_p2p_handles(self):
         if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0:
              log_tp(self.device, f"Opening P2P handles")
-             ext.pg_open_p2p_handles(self.ptr_g)
+             ext.pg_open_p2p_handles(self.ptr_g, self.device, self.ptr_p2p)
 
 
 

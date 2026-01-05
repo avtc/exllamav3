@@ -64,36 +64,26 @@ void pg_get_ipc_handle(uintptr_t ptr, char* handle_out)
     memcpy(handle_out, &handle, sizeof(handle));
 }
 
-void pg_open_p2p_handles(uintptr_t ctx)
+void pg_open_p2p_handles(uintptr_t ctx, int my_device, uintptr_t my_ptr)
 {
     PGContext* ctx_ptr = (PGContext*) ctx;
     
     // Iterate all potential peer devices
-    // We don't know exactly which are valid active peers easily unless passed, 
-    // but we can try to open all non-zero handles.
-    // However, handles are opaque.
-    // Rely on Python to set them correctly.
-    // We can just iterate 0..MAX_DEVICES.
-    
     for (int i = 0; i < MAX_DEVICES; ++i)
     {
         if (g_p2p_opened[i]) continue; // Already opened
+
+        if (i == my_device)
+        {
+            // Use local pointer directly (cannot open own IPC handle)
+             g_p2p_ptrs[i] = (void*)my_ptr;
+             g_p2p_opened[i] = true;
+             continue;
+        }
         
         // Check if handle is set (check if all zeros? simplistic check)
         bool is_zero = true;
         for(int j=0; j<64; ++j) if (ctx_ptr->p2p_handles[i][j] != 0) { is_zero = false; break; }
-        
-        // If my own device, we can just use the pointer if we had it? 
-        // No, we need to map via IPC if we want consistent access path or just use local ptr.
-        // Actually for *my* device, I should use the local pointer I allocated.
-        // But here we are in a consumer process. 
-        // If I am device i, `tensor_p2p` is mine.
-        // I can just store `tensor_p2p.data_ptr()` in `g_p2p_ptrs[i]`?
-        // But `pg_open_p2p_handles` doesn't know my local pointer.
-        
-        // Wait, `cudaIpcOpenMemHandle` on my own handle -> works?
-        // Usually yes, or fails.
-        // But better to verify.
         
         if (!is_zero)
         {
@@ -109,10 +99,7 @@ void pg_open_p2p_handles(uintptr_t ctx)
             else
             {
                 // Warn? 
-                // Maybe it's my own handle and it failed? 
-                // We will handle "my own" separately if needed, 
-                // but IPC usually works locally too (loopback).
-                // cudaGetLastError(); // Clear error
+                printf("ExLlamaV3: WARNING: cudaIpcOpenMemHandle failed for device %d (error %d)\n", i, (int)err);
             }
         }
     }

@@ -454,41 +454,6 @@ OptimizationFlags.ENABLE_GPU_ALL_REDUCE = False
 
 Removed as produced incorrect output
 
-#### Step 3: Modify Sub-modules to Respect Skip Flag
-
-**File:** `exllamav3/modules/attn.py:342-343`
-
-```python
-# Original:
-if self.tp_reduce:
-    params["backend"].all_reduce(x)
-
-# Modified:
-if self.tp_reduce and not params.get("_skip_tp_reduce"):
-    params["backend"].all_reduce(x)
-```
-
-**File:** `exllamav3/modules/block_sparse_mlp.py:733-737`
-
-```python
-# Similar modification:
-if self.tp_reduce and not params.get("_skip_tp_reduce"):
-    params["backend"].all_reduce(...)
-```
-
-### Testing
-
-```python
-# Enable fusion
-OptimizationFlags.ENABLE_FUSED_ALL_REDUCE = True
-
-# Disable fusion (baseline)
-OptimizationFlags.ENABLE_FUSED_ALL_REDUCE = False
-```
-
-### Expected Result
-- **Combined with OPT1:** 60-90 t/s (100-150% combined speedup)
-
 ---
 
 ## OPTIMIZATION 3: Optimize CPU All-Reduce When Used (P1)
@@ -616,9 +581,6 @@ class OptimizationFlags:
     ENABLE_GPU_ALL_REDUCE = os.getenv("EXLLAMA_TP_GPU_REDUCE", "1") == "1"
     GPU_ALL_REDUCE_THRESHOLD = int(os.getenv("EXLLAMA_TP_GPU_REDUCE_THRESH", "65536"))
 
-    # Fused all-reduce
-    ENABLE_FUSED_ALL_REDUCE = os.getenv("EXLLAMA_TP_FUSED_REDUCE", "1") == "1"
-
     # Buffer optimization
     CPU_REDUCE_BUFFER_MULTIPLIER = int(os.getenv("EXLLAMA_TP_CPU_BUFFER_MULT", "4"))
 ```
@@ -696,7 +658,6 @@ from exllamav3.model.model_tp_backend import OptimizationFlags
 
 # Before loading model
 OptimizationFlags.ENABLE_GPU_ALL_REDUCE = True
-OptimizationFlags.ENABLE_FUSED_ALL_REDUCE = True
 
 # Then load model
 model, config, cache, tokenizer = model_init.init(args)
@@ -774,7 +735,6 @@ def benchmark_config(name, config):
     # Set flags
     OptimizationFlags.ENABLE_GPU_ALL_REDUCE = config.get('gpu_reduce', True)
     OptimizationFlags.GPU_ALL_REDUCE_THRESHOLD = config.get('gpu_thresh', 65536)
-    OptimizationFlags.ENABLE_FUSED_ALL_REDUCE = config.get('fused', True)
 
     # Load model
     # ...
