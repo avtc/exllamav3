@@ -2,6 +2,7 @@ import torch
 import torch.distributed as dist
 import time
 import numpy as np
+import os
 from .model_tp_cuda import cuda_host_register, cuda_host_unregister, CUDA_HOST_REGISTER_PORTABLE
 from ..ext import exllamav3_ext as ext
 from multiprocessing import shared_memory
@@ -12,6 +13,44 @@ SHBUF_SIZE = 16 * 1024 ** 2
 SHBUF_SIZE_R = 17 * 128 * 1024
 SHBUF_SIZE_S = 16 * 1024
 MAX_CPU_REDUCE = SHBUF_SIZE_R // 17 // 256 * 256
+
+
+class OptimizationFlags:
+    """
+    Enable/disable specific optimizations for multi-GPU tensor parallelism.
+
+    All flags can be controlled via environment variables:
+    - EXLLAMA_TP_GPU_REDUCE: Enable GPU all-reduce (default: 1)
+    - EXLLAMA_TP_GPU_REDUCE_THRESH: Threshold in elements (default: 65536)
+    - EXLLAMA_TP_FUSED_REDUCE: Enable fused all-reduce (default: 1, not yet implemented)
+    - EXLLAMA_TP_CPU_BUFFER_MULT: CPU buffer multiplier (default: 4)
+    """
+
+    # OPT1: Use GPU all-reduce instead of CPU
+    # GPU all-reduce stays entirely on GPU (faster with P2P)
+    # CPU all-reduce goes through RAM (slower, but works without P2P)
+    ENABLE_GPU_ALL_REDUCE = os.getenv("EXLLAMA_TP_GPU_REDUCE", "1") == "1"
+
+    # Threshold for choosing GPU vs CPU all-reduce (in number of elements)
+    # 0 = always use GPU, 65536 = 256KB for fp16 (default)
+    GPU_ALL_REDUCE_THRESHOLD = int(os.getenv("EXLLAMA_TP_GPU_REDUCE_THRESH", "65536"))
+
+    # OPT2: Fuse attention and MoE all-reduce into single operation (TODO)
+    ENABLE_FUSED_ALL_REDUCE = os.getenv("EXLLAMA_TP_FUSED_REDUCE", "1") == "1"
+
+    # OPT3: CPU all-reduce buffer multiplier (when GPU path can't be used)
+    # Larger buffer allows batching of reductions
+    CPU_REDUCE_BUFFER_MULTIPLIER = int(os.getenv("EXLLAMA_TP_CPU_BUFFER_MULT", "4"))
+
+    @classmethod
+    def log_settings(cls):
+        """Log current optimization settings"""
+        log_tp(-1, f"TP Optimization Settings:")
+        log_tp(-1, f"  GPU all-reduce: {cls.ENABLE_GPU_ALL_REDUCE}")
+        log_tp(-1, f"  GPU threshold: {cls.GPU_ALL_REDUCE_THRESHOLD} elements")
+        log_tp(-1, f"  Fused all-reduce: {cls.ENABLE_FUSED_ALL_REDUCE} (not yet implemented)")
+        log_tp(-1, f"  CPU buffer multiplier: {cls.CPU_REDUCE_BUFFER_MULTIPLIER}x")
+
 
 class TPBackend:
 
@@ -152,6 +191,12 @@ class TPBackendNCCL:
 
 class TPBackendNative:
 
+    # Class-level counters for tracking all-reduce usage
+    _gpu_reduce_count = 0
+    _cpu_reduce_count = 0
+    _total_bytes_gpu = 0
+    _total_bytes_cpu = 0
+
     def __init__(
         self,
         device: int,
@@ -182,6 +227,9 @@ class TPBackendNative:
         size_s = SHBUF_SIZE_S
 
         if master:
+            # Log optimization settings
+            OptimizationFlags.log_settings()
+
             log_tp(device, f"Creating SHMs")
             self.shm_g = shared_memory.SharedMemory(create = True, size = size_g, name = self.shm_g_name)
             log_tp(device, f"Created SHM: {self.shm_g_name}, {size_g} bytes")
@@ -329,30 +377,105 @@ class TPBackendNative:
 
 
     def all_reduce(self, tensor: torch.Tensor, contribution: bool = True):
-        # if tensor.numel() * 2 < MAX_CPU_REDUCE:
-        ext.pg_all_reduce_cpu(
-            self.ptr_g,
-            self.active_devices,
-            self.device,
-            self.active_devices[0],
-            tensor,
-            contribution,
-            self.ptr_r,
-            SHBUF_SIZE_R,
-            self.master,
-            self.abort_flag
+        """
+        All-reduce operation with configurable CPU/GPU backend.
+
+        GPU path (OPT1): Direct GPU-to-GPU via P2P/PCIe, no CPU involvement
+        CPU path: GPU → RAM → CPU → RAM → GPU (slower, but works without P2P)
+
+        Backend selection is controlled by:
+        - OptimizationFlags.ENABLE_GPU_ALL_REDUCE
+        - OptimizationFlags.GPU_ALL_REDUCE_THRESHOLD
+        """
+
+        # Determine if we should use GPU all-reduce
+        use_gpu_reduce = (
+            OptimizationFlags.ENABLE_GPU_ALL_REDUCE and
+            tensor.numel() >= OptimizationFlags.GPU_ALL_REDUCE_THRESHOLD
         )
-        # else:
-        #     ext.pg_all_reduce(
-        #         self.ptr_g,
-        #         self.active_devices,
-        #         self.device,
-        #         self.active_devices[0],
-        #         tensor,
-        #         self.ptr_b,
-        #         self.shbuf_size,
-        #         self.abort_flag
-        #     )
+
+        tensor_bytes = tensor.numel() * tensor.element_size()
+
+        if use_gpu_reduce:
+            # GPU-based ring all-reduce (direct GPU-to-GPU, can use P2P)
+            # This is the fast path! No CPU involvement.
+            # Only limitation: requires P2P or NVLink for optimal performance
+
+            # Track statistics
+            TPBackendNative._gpu_reduce_count += 1
+            TPBackendNative._total_bytes_gpu += tensor_bytes
+
+            # Log first few calls for debugging
+            if TPBackendNative._gpu_reduce_count <= 5:
+                log_tp(self.device, f"All-reduce: GPU path ({tensor.numel()} elems, {tensor_bytes//1024} KB)")
+
+            ext.pg_all_reduce(
+                self.ptr_g,
+                self.active_devices,
+                self.device,
+                self.active_devices[0],
+                tensor,
+                self.ptr_b,  # Use larger SHBUF (16 MB vs 2.1 MB)
+                self.shbuf_size,
+                self.abort_flag
+            )
+        else:
+            # CPU-based all-reduce (original behavior)
+            # Goes through RAM: GPU → RAM → CPU (sum) → RAM → GPU
+            # Use this as fallback when P2P is not available or for small tensors
+
+            # Track statistics
+            TPBackendNative._cpu_reduce_count += 1
+            TPBackendNative._total_bytes_cpu += tensor_bytes
+
+            # Log first few calls for debugging
+            if TPBackendNative._cpu_reduce_count <= 5:
+                reason = "disabled" if not OptimizationFlags.ENABLE_GPU_ALL_REDUCE else "too small"
+                log_tp(self.device, f"All-reduce: CPU path ({tensor.numel()} elems, {tensor_bytes//1024} KB, reason: {reason})")
+
+            ext.pg_all_reduce_cpu(
+                self.ptr_g,
+                self.active_devices,
+                self.device,
+                self.active_devices[0],
+                tensor,
+                contribution,
+                self.ptr_r,
+                SHBUF_SIZE_R,
+                self.master,
+                self.abort_flag
+            )
+
+    @classmethod
+    def get_all_reduce_stats(cls):
+        """Get statistics on all-reduce usage"""
+        total = cls._gpu_reduce_count + cls._cpu_reduce_count
+        if total == 0:
+            return {"total": 0, "gpu": 0, "cpu": 0, "gpu_pct": 0, "cpu_pct": 0}
+
+        gpu_pct = 100 * cls._gpu_reduce_count / total
+        cpu_pct = 100 * cls._cpu_reduce_count / total
+
+        return {
+            "total": total,
+            "gpu": cls._gpu_reduce_count,
+            "cpu": cls._cpu_reduce_count,
+            "gpu_pct": gpu_pct,
+            "cpu_pct": cpu_pct,
+            "total_mb_gpu": cls._total_bytes_gpu / (1024*1024),
+            "total_mb_cpu": cls._total_bytes_cpu / (1024*1024),
+        }
+
+    @classmethod
+    def log_all_reduce_stats(cls):
+        """Log all-reduce statistics"""
+        stats = cls.get_all_reduce_stats()
+        if stats["total"] > 0:
+            log_tp(-1, f"All-reduce statistics:")
+            log_tp(-1, f"  Total calls: {stats['total']}")
+            log_tp(-1, f"  GPU path: {stats['gpu']} ({stats['gpu_pct']:.1f}%) - {stats['total_mb_gpu']:.1f} MB")
+            log_tp(-1, f"  CPU path: {stats['cpu']} ({stats['cpu_pct']:.1f}%) - {stats['total_mb_cpu']:.1f} MB")
+
 
 
     def gather(
