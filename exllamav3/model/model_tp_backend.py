@@ -83,6 +83,10 @@ class OptimizationFlags:
     # Recommended for P2P/NVLink setups where low latency is key.
     ENABLE_BUSY_WAIT = os.getenv("EXLLAMA_TP_BUSY_WAIT", "0") == "1"
 
+    # OPT8: Use P2P (VRAM) buffers for all-reduce
+    # Requires P2P support between GPUs. avoids host memory roundtrip.
+    ENABLE_P2P_TRANSFER = os.getenv("EXLLAMA_TP_P2P", "0") == "1"
+
     @classmethod
     def log_settings(cls):
         """Log current optimization settings"""
@@ -95,6 +99,7 @@ class OptimizationFlags:
         log_tp(-1, f"  Batched sampling: {cls.ENABLE_BATCHED_SAMPLING}")
         log_tp(-1, f"  CUDA IPC sharing: {cls.ENABLE_CUDA_IPC_SHARING}")
         log_tp(-1, f"  Busy wait: {cls.ENABLE_BUSY_WAIT}")
+        log_tp(-1, f"  P2P transfer: {cls.ENABLE_P2P_TRANSFER}")
 
 
 class TPBackend:
@@ -159,6 +164,7 @@ class TPBackendNCCL:
         print(f" -- NCCL warmup, device {device}, please wait...")
         x = torch.ones((6,), device = device)
         dist.all_reduce(x)
+        self.fallback.register_p2p()
         print(f" -- Finished NCCL warmup, device {device}")
 
 
@@ -388,15 +394,24 @@ class TPBackendNative:
         log_tp(self.device, f"Closed {self.shm_r_name}")
         self.shm_s.close()
         log_tp(self.device, f"Closed {self.shm_s_name}")
-        if self.master:
-            log_tp(self.device, f"Master unlink G")
-            self.shm_g.unlink()
-            log_tp(self.device, f"Master unlink B")
-            self.shm_b.unlink()
-            log_tp(self.device, f"Master unlink R")
-            self.shm_r.unlink()
-            log_tp(self.device, f"Master unlink S")
             self.shm_s.unlink()
+
+
+        # OPT8: Allocate P2P VRAM buffer
+        if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0:
+            # Same size as regular reduction buffer (size_r)
+            self.tensor_p2p = torch.zeros((size_r,), dtype=torch.uint8, device=self.device)
+            self.ptr_p2p = self.tensor_p2p.data_ptr()
+            log_tp(device, f"Allocated P2P buffer: {size_r} bytes")
+        else:
+            self.tensor_p2p = None
+            self.ptr_p2p = 0
+
+    def register_p2p(self):
+        if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0 and self.tensor_p2p is not None:
+             log_tp(self.device, f"Registering P2P buffer")
+             ext.pg_set_p2p_buffer(self.ptr_g, self.device, self.ptr_p2p)
+
 
 
     def fwd_barrier(self):

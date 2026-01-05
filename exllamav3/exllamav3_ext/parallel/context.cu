@@ -25,7 +25,9 @@ void pg_init_context(uintptr_t ctx)
         ctx_ptr->reduce_stage_consumed[i] = 0;
         ctx_ptr->gather_stage_produced[i] = 0;
         ctx_ptr->gather_stage_consumed[i] = 0;
+        ctx_ptr->gather_stage_consumed[i] = 0;
         ctx_ptr->cpusum_stage_device[i * REDUCE_STAGE_STRIDE] = 0;
+        ctx_ptr->p2p_temp_buffers[i] = 0;
     }
 
     ctx_ptr->reduce_jobs_head = 0;
@@ -39,5 +41,14 @@ void pg_check_timeout(uintptr_t ctx)
     if (ctx_ptr->sync_timeout)
     {
         TORCH_CHECK(false, "Synchronization timeout");
+    }
+}
+
+void pg_set_p2p_buffer(uintptr_t ctx, int device, uintptr_t ptr)
+{
+    PGContext* ctx_ptr = (PGContext*) ctx;
+    if (device >= 0 && device < MAX_DEVICES)
+    {
+        ctx_ptr->p2p_temp_buffers[device] = ptr;
     }
 }

@@ -70,6 +70,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("had_paley2", &had_paley2, "had_paley2");
 
     m.def("pg_init_context", &pg_init_context, "pg_init_context");
+    m.def("pg_set_p2p_buffer", &pg_set_p2p_buffer, "pg_set_p2p_buffer");
     m.def("pg_broadcast", &pg_broadcast, "pg_broadcast");
     m.def("pg_broadcast_ll", &pg_broadcast_ll, "pg_broadcast_ll");
     m.def("pg_barrier", &pg_barrier, "pg_barrier");
