@@ -27,7 +27,7 @@ void pg_init_context(uintptr_t ctx)
         ctx_ptr->gather_stage_consumed[i] = 0;
         ctx_ptr->gather_stage_consumed[i] = 0;
         ctx_ptr->cpusum_stage_device[i * REDUCE_STAGE_STRIDE] = 0;
-        ctx_ptr->p2p_temp_buffers[i] = 0;
+        memset(ctx_ptr->p2p_handles[i], 0, 64);
     }
 
     ctx_ptr->reduce_jobs_head = 0;
