@@ -31,7 +31,7 @@ struct alignas(64) PGContext
     alignas(16) uint32_t reduce_stage_consumed[MAX_DEVICES];
     alignas(16) uint32_t gather_stage_produced[MAX_DEVICES];
     alignas(16) uint32_t gather_stage_consumed[MAX_DEVICES];
-    alignas(16) uintptr_t p2p_temp_buffers[MAX_DEVICES]; // Pointers to VRAM buffers on each device
+    alignas(16) uint8_t p2p_handles[MAX_DEVICES][64]; // CUDA IPC handles (fixed 64 bytes)
 
     // Maintain flags in separate 64-byte regions/cache lines
     alignas(64) uint32_t reduce_jobs_head; char _pad1[64 - sizeof(uint32_t)];
@@ -43,4 +43,7 @@ struct alignas(64) PGContext
 
 void pg_init_context(uintptr_t ctx);
 void pg_check_timeout(uintptr_t ctx);
-void pg_set_p2p_buffer(uintptr_t ctx, int device, uintptr_t ptr);
+void pg_set_p2p_handle(uintptr_t ctx, int device, const char* handle_bytes);
+void pg_get_ipc_handle(uintptr_t ptr, char* handle_out);
+void pg_open_p2p_handles(uintptr_t ctx);
+void* pg_get_p2p_ptr(int device);

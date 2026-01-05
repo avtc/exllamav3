@@ -250,6 +250,88 @@ void pg_all_reduce_kernel
     }
 }
 
+struct P2PPtrs { void* ptrs[MAX_DEVICES]; };
+
+__global__ __launch_bounds__(MAX_NUM_THREADS)
+void pg_all_reduce_p2p_kernel
+(
+    PGContext* __restrict__ ctx,
+    const uint32_t device_mask,
+    int this_device,
+    int master_device,
+    uint8_t* __restrict__ data_ptr,
+    const size_t data_size,
+    uint32_t* abort_flag,
+    P2PPtrs p2p_ptrs // Passed by value
+)
+{
+    int t = threadIdx.x;
+    int num_ranks = __popc(device_mask);
+    if (num_ranks <= 1) return;
+    int this_rank = __popc(device_mask & ((1 << this_device) - 1));
+
+    // Load my P2P pointer
+    uint8_t* my_p2p_ptr = (uint8_t*)p2p_ptrs.ptrs[this_device];
+    if (!my_p2p_ptr) return; // Should not happen if dispatch checked
+
+    uint8_t* data_end = data_ptr + data_size;
+
+    // 1. Copy data to my P2P buffer (Publish)
+    uint8_t* src = data_ptr + t * 16;
+    uint8_t* dst = my_p2p_ptr + t * 16;
+    
+    while (src < data_end)
+    {
+        *((uint4*)dst) = *((uint4*)src);
+        src += blockDim.x * 16;
+        dst += blockDim.x * 16;
+    }
+    
+    // 2. Sync
+    pg_barrier_inner(ctx, device_mask, this_device, master_device, abort_flag);
+    if (*abort_flag) return;
+
+    // 3. Read and Reduce from Peers
+    extern __shared__ uint8_t* p2p_ptrs_s[];
+    
+    if (t < MAX_DEVICES)
+    {
+         if ((device_mask >> t) & 1)
+            p2p_ptrs_s[t] = (uint8_t*)p2p_ptrs.ptrs[t];
+         else
+            p2p_ptrs_s[t] = nullptr;
+    }
+    __syncthreads();
+
+    for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
+    {
+        float4 acc = {0.0f, 0.0f, 0.0f, 0.0f}; 
+        bool first = true;
+        
+        for (int dev = 0; dev < MAX_DEVICES; ++dev)
+        {
+             if (!p2p_ptrs_s[dev]) continue;
+             
+             uint8_t* r_ptr = p2p_ptrs_s[dev] + offset;
+             float4 val = *((float4*)r_ptr);
+             
+             if (first) { acc = val; first = false; }
+             else 
+             {
+                 acc.x += val.x;
+                 acc.y += val.y;
+                 acc.z += val.z;
+                 acc.w += val.w;
+             }
+        }
+        
+        *((float4*)(data_ptr + offset)) = acc;
+    }
+
+    // Finished. Sync/Barrier
+    pg_barrier_inner(ctx, device_mask, this_device, master_device, abort_flag);
+}
+
 __global__ __launch_bounds__(MAX_NUM_THREADS)
 void pg_all_reduce_small_kernel
 (
@@ -344,15 +426,51 @@ void pg_all_reduce
     for (int i : devices) device_mask |= (1 << i);
     long num_ranks = devices.size();
     
-    uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
-    
-    // Heuristic for direct reduce
-    size_t rank_shbuf_capacity = shbuf_size / num_ranks;
-    // 512KB threshold
-    bool direct_reduce = (data_size <= rank_shbuf_capacity) && (data_size <= 512 * 1024);
-
-    if (direct_reduce)
+    // Check P2P availability locally
+    P2PPtrs p2p_ptrs;
+    bool all_p2p_valid = true;
+    for(int i=0; i<MAX_DEVICES; ++i) 
     {
+        p2p_ptrs.ptrs[i] = pg_get_p2p_ptr(i);
+        if (((device_mask >> i) & 1) && !p2p_ptrs.ptrs[i]) all_p2p_valid = false;
+    }
+
+    // Heuristic for direct reduce (Host or P2P)
+    bool can_use_small_direct = (data_size <= 512 * 1024);
+    
+    uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
+
+    if (all_p2p_valid && can_use_small_direct)
+    {
+         int threads = MAX_NUM_THREADS;
+         if (data_size < threads * 16) threads = CEIL_DIVIDE(data_size, 16);
+         threads = ((threads + 31) / 32) * 32;
+
+         void* kernelArgs[] =
+         {
+            (void*)& ctx,
+            (void*)& device_mask,
+            (void*)& this_device,
+            (void*)& master_device,
+            (void*)& data_ptr,
+            (void*)& data_size,
+            (void*)& abort_flag_ptr,
+            (void*)& p2p_ptrs
+         };
+         
+         cudaLaunchCooperativeKernel
+         (
+            (void*)pg_all_reduce_p2p_kernel,
+            dim3(1),
+            dim3(threads),
+            kernelArgs,
+            sizeof(uint8_t*) * MAX_DEVICES, // Shared memory size
+            stream
+         );
+    }
+    else if (can_use_small_direct && (data_size <= shbuf_size / num_ranks))
+    {
+        // Host Memory Direct Reduce
         int threads = MAX_NUM_THREADS;
         if (data_size < threads * 16) threads = CEIL_DIVIDE(data_size, 16);
         threads = ((threads + 31) / 32) * 32;

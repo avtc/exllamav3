@@ -70,7 +70,20 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("had_paley2", &had_paley2, "had_paley2");
 
     m.def("pg_init_context", &pg_init_context, "pg_init_context");
-    m.def("pg_set_p2p_buffer", &pg_set_p2p_buffer, "pg_set_p2p_buffer");
+    m.def("pg_set_p2p_handle", [](uintptr_t ctx, int device, py::bytes handle) {
+        std::string h_str = handle;
+        if (h_str.size() != 64) throw std::runtime_error("Handle must be 64 bytes");
+        pg_set_p2p_handle(ctx, device, h_str.data());
+    }, "pg_set_p2p_handle");
+    
+    m.def("pg_get_ipc_handle", [](uintptr_t ptr) {
+        char handle[64];
+        pg_get_ipc_handle(ptr, handle);
+        return py::bytes(handle, 64);
+    }, "pg_get_ipc_handle");
+
+    m.def("pg_open_p2p_handles", &pg_open_p2p_handles, "pg_open_p2p_handles");
+
     m.def("pg_broadcast", &pg_broadcast, "pg_broadcast");
     m.def("pg_broadcast_ll", &pg_broadcast_ll, "pg_broadcast_ll");
     m.def("pg_barrier", &pg_barrier, "pg_barrier");

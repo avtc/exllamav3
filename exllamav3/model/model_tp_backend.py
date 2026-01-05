@@ -165,6 +165,8 @@ class TPBackendNCCL:
         x = torch.ones((6,), device = device)
         dist.all_reduce(x)
         self.fallback.register_p2p()
+        dist.barrier() # Ensure all registered
+        self.fallback.open_p2p_handles()
         print(f" -- Finished NCCL warmup, device {device}")
 
 
@@ -394,7 +396,15 @@ class TPBackendNative:
         log_tp(self.device, f"Closed {self.shm_r_name}")
         self.shm_s.close()
         log_tp(self.device, f"Closed {self.shm_s_name}")
-            self.shm_s.unlink()
+        if self.master:
+             log_tp(self.device, f"Master unlink G")
+             self.shm_g.unlink()
+             log_tp(self.device, f"Master unlink B")
+             self.shm_b.unlink()
+             log_tp(self.device, f"Master unlink R")
+             self.shm_r.unlink()
+             log_tp(self.device, f"Master unlink S")
+             self.shm_s.unlink()
 
 
         # OPT8: Allocate P2P VRAM buffer
@@ -409,8 +419,16 @@ class TPBackendNative:
 
     def register_p2p(self):
         if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0 and self.tensor_p2p is not None:
-             log_tp(self.device, f"Registering P2P buffer")
-             ext.pg_set_p2p_buffer(self.ptr_g, self.device, self.ptr_p2p)
+             log_tp(self.device, f"Registering P2P buffer handle")
+             # Get handle from C++
+             handle_bytes = ext.pg_get_ipc_handle(self.ptr_p2p)
+             # Write to context
+             ext.pg_set_p2p_handle(self.ptr_g, self.device, handle_bytes)
+    
+    def open_p2p_handles(self):
+        if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0:
+             log_tp(self.device, f"Opening P2P handles")
+             ext.pg_open_p2p_handles(self.ptr_g)
 
 
 
