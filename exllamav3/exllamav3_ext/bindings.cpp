@@ -49,6 +49,22 @@
 #include "libtorch/mlp.h"
 #include "libtorch/blocksparse_mlp.h"
 
+uintptr_t pg_mem_alloc_impl(size_t size)
+{
+    void* ptr = nullptr;
+    // cudaMalloc is available via torch headers or cuda_runtime.h
+    if (cudaMalloc(&ptr, size) != cudaSuccess) {
+        throw std::runtime_error("cudaMalloc failed in pg_mem_alloc");
+    }
+    cudaMemset(ptr, 0, size);
+    return (uintptr_t)ptr;
+}
+
+void pg_mem_free_impl(uintptr_t ptr)
+{
+    if (ptr) cudaFree((void*)ptr);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
     m.def("stloader_read", &stloader_read, "stloader_read");
@@ -83,8 +99,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     }, "pg_get_ipc_handle");
 
     m.def("pg_open_p2p_handles", &pg_open_p2p_handles, "pg_open_p2p_handles");
-    m.def("pg_mem_alloc", &pg_mem_alloc, "pg_mem_alloc");
-    m.def("pg_mem_free", &pg_mem_free, "pg_mem_free");
+    m.def("pg_mem_alloc", &pg_mem_alloc_impl, "pg_mem_alloc");
+    m.def("pg_mem_free", &pg_mem_free_impl, "pg_mem_free");
 
     m.def("pg_broadcast", &pg_broadcast, "pg_broadcast");
     m.def("pg_broadcast_ll", &pg_broadcast_ll, "pg_broadcast_ll");
