@@ -139,7 +139,6 @@ class TPBackendNCCL:
             world_size = self.world_size,
             init_method = init_method,
         )
-        self.mp_warmup_nccl(device)
         self.fallback = TPBackendNative(
             device,
             active_devices,
@@ -149,6 +148,7 @@ class TPBackendNCCL:
             uuid,
             shbuf_size
         )
+        self.mp_warmup_nccl(device)
 
 
     def mp_warmup_nccl(self, device):

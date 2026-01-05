@@ -44,6 +44,9 @@ def init_pg(device: int, active_devices: list[int], output_device: int, backend_
                 uuid = backend_args["uuid"],
                 cpu = device < 0
             )
+            backend.register_p2p()
+            backend.fwd_barrier()
+            backend.open_p2p_handles()
         case _:
             raise ValueError("Unknown backend type")
 
