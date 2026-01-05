@@ -272,7 +272,12 @@ void pg_all_reduce_p2p_kernel
 
     // Load my P2P pointer
     uint8_t* my_p2p_ptr = (uint8_t*)p2p_ptrs.ptrs[this_device];
-    if (!my_p2p_ptr) return; // Should not happen if dispatch checked
+    if (!my_p2p_ptr) 
+    {
+        printf("ExLlamaV3: P2P FATAL: Rank %d has no P2P pointer!\n", this_device);
+        *abort_flag = 1; 
+        return; 
+    }
 
     uint8_t* data_end = data_ptr + data_size;
 
@@ -289,6 +294,7 @@ void pg_all_reduce_p2p_kernel
     
     // Ensure writes to P2P buffer are visible to peers
     __threadfence_system();
+    __syncthreads(); // Ensure all threads finished writing
 
     // 2. Sync
     pg_barrier_inner(ctx, device_mask, this_device, master_device, abort_flag);
@@ -313,7 +319,18 @@ void pg_all_reduce_p2p_kernel
         
         for (int dev = 0; dev < MAX_DEVICES; ++dev)
         {
-             if (!p2p_ptrs_s[dev]) continue;
+             if (!p2p_ptrs_s[dev]) 
+             {
+                 // If this device is supposed to be active (in mask) but has no pointer, it's an error.
+                 // However, p2p_ptrs_s[dev] is set to nullptr if NOT in mask.
+                 // We need to check if it SHOULD be there.
+                 if ((device_mask >> dev) & 1) 
+                 {
+                     printf("ExLlamaV3: P2P FATAL: Rank %d missing peer pointer for Rank %d!\n", this_device, dev);
+                     *abort_flag = 1;
+                 }
+                 continue;
+             }
              
              uint8_t* r_ptr = p2p_ptrs_s[dev] + offset;
              volatile float4* v_ptr = (volatile float4*)r_ptr;
@@ -338,6 +355,7 @@ void pg_all_reduce_p2p_kernel
 
     // Ensure output writes are visible
     __threadfence_system();
+    __syncthreads();
 
     // Finished. Sync/Barrier
     pg_barrier_inner(ctx, device_mask, this_device, master_device, abort_flag);
