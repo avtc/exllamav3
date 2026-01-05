@@ -12,7 +12,7 @@
 #define SYNC_MAX_SLEEP 1024
 
 // Timeout in seconds
-#define SYNC_TIMEOUT 2ull
+#define SYNC_TIMEOUT 60ull
 
 struct ReduceJob
 {

@@ -69,10 +69,13 @@ class Model_TPMixin:
         self.mp_child_conn: list = [None] * (num_devices + 1)
         self.tp_producer = SMProducer(buffer_size = 64 * 1024**2)
 
+        parent_init_args = None
+
         for rank, device in enumerate(self.active_devices + [-1]):
             log_tp(None, f"Spawning child process: {device}")
             if self.tp_output_device == device:
-                self.mp_parent_conn[device] = PseudoParentConn(
+                # Defer initialization of PseudoParentConn to avoid blocking on barrier
+                parent_init_args = (
                     device,
                     self.active_devices,
                     self.tp_output_device,
@@ -96,6 +99,10 @@ class Model_TPMixin:
                     )
                 )
                 self.mp_children[device].start()
+
+        if parent_init_args:
+             device = parent_init_args[0]
+             self.mp_parent_conn[device] = PseudoParentConn(*parent_init_args)
 
         # Install exit hook to avoid child processes hanging if main process exits before unloading model
         cleanupper.register_atexit(self.destroy_tp_context)
