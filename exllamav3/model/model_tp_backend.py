@@ -421,7 +421,7 @@ class TPBackendNative:
 
 
     def register_p2p(self):
-        if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0 and self.tensor_p2p is not None:
+        if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0 and self.ptr_p2p != 0:
              log_tp(self.device, f"Registering P2P buffer handle")
              # Get handle from C++
              handle_bytes = ext.pg_get_ipc_handle(self.ptr_p2p)
