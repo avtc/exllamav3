@@ -3,6 +3,7 @@ from .loader import SafetensorsCollection, VariantSafetensorsCollection
 from .cache import CacheLayer_fp16, CacheLayer_quant
 from argparse import ArgumentParser
 import yaml
+import os
 
 def add_args(
     parser: ArgumentParser,
@@ -140,7 +141,7 @@ def init(
 
     # Parallelism options
     tp_options = {
-        "moe_tensor_split": args.tp_moe_tensor_split
+        "moe_tensor_split": args.tp_moe_tensor_split or os.getenv("EXLLAMA_MOE_TENSOR_SPLIT", "0") == "1"
     }
 
     # Parallelism limits

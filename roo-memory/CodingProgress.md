@@ -164,6 +164,11 @@ export EXLLAMA_BATCHED_SAMPLING=1
 
 # Enable/disable CUDA IPC sharing (default: 1 = enabled)
 export EXLLAMA_CUDA_IPC_SHARING=1
+
+# Enable tensor split for MoE layers instead of expert parallelism (default: 0 = disabled)
+# Use with TabbyAPI or when --tp_moe_tensor_split flag is not available
+# Recommended: Set to 1 for MoE models (DeepSeek, Mixtral, etc.) for 10-20% speedup
+export EXLLAMA_MOE_TENSOR_SPLIT=1
 ```
 
 ---
@@ -202,7 +207,7 @@ export EXLLAMA_CUDA_IPC_SHARING=1
 ### Final Results (Phase 1+2+3+5+6)
 - **Date:** TBD
 - **Performance:** TBD t/s
-- **Total Speedup:** TBD%
+- **Expected Speedup:** 3-4x (note: use --tp_moe_tensor_split for +10-20% on MoE models)
 
 ---
 
@@ -211,3 +216,6 @@ export EXLLAMA_CUDA_IPC_SHARING=1
 - [x] All optimizations are toggleable via environment variables
 - [ ] Each optimization tested independently
 - [ ] Results compared against vLLM baseline (79-136 t/s)
+
+**Important Note for MoE Models:**
+For MoE models (DeepSeek, Mixtral, etc.), ExLlamaV3 defaults to Expert Parallel mode (slower). To match vLLM's faster default behavior, use the `--tp_moe_tensor_split` flag for 10-20% additional speedup. See `roo-memory/Research-ExpertParallel.md` for details.
