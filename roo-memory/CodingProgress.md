@@ -91,6 +91,25 @@
 
 ---
 
+### OPT5: Batched Sampling
+
+**Expected Speedup:** 20-30%
+**Effort:** 6-8 hours
+**Status:** ✅ **IMPLEMENTED** - Ready for testing via TabbyAPI
+
+#### Tasks:
+
+- [x] **5.1** Add ENABLE_BATCHED_SAMPLING flag to OptimizationFlags
+- [x] **5.2** Implement receive_logits_batched() method in job.py
+- [x] **5.3** Modify generator loop to use batched sampling conditionally
+- [x] **5.4** Add fallback to serial sampling when disabled
+- [x] **5.5** Add environment variable support (EXLLAMA_BATCHED_SAMPLING)
+- [ ] **5.6** Test with batched sampling enabled (via TabbyAPI)
+- [ ] **5.7** Benchmark and measure speedup
+- [ ] **5.8** Document results
+
+---
+
 ## Testing & Benchmarking
 
 ### Benchmark Tasks:
@@ -120,6 +139,9 @@ export EXLLAMA_TP_FUSED_REDUCE=1
 
 # CPU buffer multiplier (default: 4)
 export EXLLAMA_TP_CPU_BUFFER_MULT=4
+
+# Enable/disable batched sampling (default: 1 = enabled)
+export EXLLAMA_BATCHED_SAMPLING=1
 ```
 
 ---
@@ -143,7 +165,13 @@ export EXLLAMA_TP_CPU_BUFFER_MULT=4
 - **Performance:** TBD t/s
 - **Speedup:** TBD%
 
-### Final Results (Phase 1+2)
+### OPT5 Results (Batched Sampling)
+- **Date:** TBD
+- **Configuration:** EXLLAMA_BATCHED_SAMPLING=1
+- **Performance:** TBD t/s
+- **Speedup:** TBD%
+
+### Final Results (Phase 1+2+3)
 - **Date:** TBD
 - **Performance:** TBD t/s
 - **Total Speedup:** TBD%
@@ -152,6 +180,6 @@ export EXLLAMA_TP_CPU_BUFFER_MULT=4
 
 ## Notes
 
-- [ ] All optimizations are toggleable via environment variables
+- [x] All optimizations are toggleable via environment variables
 - [ ] Each optimization tested independently
 - [ ] Results compared against vLLM baseline (79-136 t/s)

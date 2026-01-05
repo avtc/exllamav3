@@ -68,6 +68,12 @@ class OptimizationFlags:
     # Larger buffers help when GPU all-reduce can't be used for small tensors
     CPU_REDUCE_BUFFER_MULTIPLIER = int(os.getenv("EXLLAMA_TP_CPU_BUFFER_MULT", "4"))
 
+    # OPT5: Batched sampling to reduce GPU-CPU synchronization overhead
+    # Processes all sequences in a job in a single batch instead of looping
+    # Reduces GPU→CPU syncs from O(sequences) to O(1) per job
+    # Expected speedup: 20-30% for multi-sequence jobs
+    ENABLE_BATCHED_SAMPLING = os.getenv("EXLLAMA_BATCHED_SAMPLING", "1") == "1"
+
     @classmethod
     def log_settings(cls):
         """Log current optimization settings"""
@@ -77,6 +83,7 @@ class OptimizationFlags:
         log_tp(-1, f"  Fused all-reduce: {cls.ENABLE_FUSED_ALL_REDUCE}")
         buffer_mb = get_cpu_reduce_buffer_size(cls.CPU_REDUCE_BUFFER_MULTIPLIER) / (1024*1024)
         log_tp(-1, f"  CPU buffer: {buffer_mb:.1f} MB ({cls.CPU_REDUCE_BUFFER_MULTIPLIER}x default)")
+        log_tp(-1, f"  Batched sampling: {cls.ENABLE_BATCHED_SAMPLING}")
 
 
 class TPBackend:

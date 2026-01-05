@@ -770,6 +770,69 @@ class Job:
         return emit(results, emit_held = True)
 
 
+    def receive_logits_batched(
+        self,
+        logits: torch.Tensor,
+    ):
+        """
+        OPT5: Batched sampling for all sequences in a job.
+        Processes all sequences at once to reduce GPU-CPU synchronization overhead.
+
+        Args:
+            logits: Job logits with shape [num_cfg, num_sequences, vocab_size]
+
+        Returns:
+            next_tokens: Sampled tokens with shape [num_cfg, num_sequences]
+            next_k_tokens: Top-k tokens (if enabled) or None
+            next_k_probs: Top-k probabilities (if enabled) or None
+            next_prob: Token probabilities (if enabled) or None
+        """
+        from ..model.model_tp_backend import OptimizationFlags
+
+        num_cfg = logits.shape[0]
+        num_sequences = logits.shape[1]
+
+        # Reshape logits to [num_cfg * num_sequences, vocab_size] for batched sampling
+        logits_reshaped = logits.reshape(num_cfg * num_sequences, -1)
+
+        # Batch sample all sequences at once
+        next_token = self.sampler.forward(
+            logits_reshaped,
+            self.current_pinned_ids,
+            self.rng.randint(0, (1<<32)-1),
+            self.generator.tokenizer,
+            logit_mask = self.device_logit_mask
+        )
+
+        # Reshape back to [num_cfg, num_sequences]
+        next_tokens = next_token.reshape(num_cfg, num_sequences)
+
+        next_prob, next_k_tokens, next_k_probs = None, None, None
+
+        if self.return_probs or self.return_top_tokens > 0:
+            probs = torch.softmax(logits_reshaped.float(), dim = -1)
+
+            if self.return_probs:
+                # Gather probabilities for sampled tokens
+                next_prob = torch.gather(
+                    probs.squeeze(0),
+                    dim = 1,
+                    index = next_token.squeeze(0)
+                )
+                next_prob = next_prob.reshape(num_cfg, num_sequences)
+
+            if self.return_top_tokens > 0:
+                # Get top-k tokens and probabilities
+                sorted_probs, sorted_indices = torch.sort(probs, dim = -1, descending = True)
+                next_k_tokens = sorted_indices[:, :, :self.return_top_tokens]
+                next_k_probs = sorted_probs[:, :, :self.return_top_tokens]
+                # Reshape to [num_cfg, num_sequences, k]
+                next_k_tokens = next_k_tokens.reshape(num_cfg, num_sequences, -1)
+                next_k_probs = next_k_probs.reshape(num_cfg, num_sequences, -1)
+
+        return next_tokens, next_k_tokens, next_k_probs, next_prob
+
+
     def prepare_for_requeue(self):
         assert len(self.sequences) == 1
 

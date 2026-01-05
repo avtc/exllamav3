@@ -16,6 +16,7 @@ import time
 import threading
 from ..tokenizer import MMEmbedding
 from ..util import profile_opt
+from ..model.model_tp_backend import OptimizationFlags
 
 class Generator:
 
@@ -516,56 +517,102 @@ class Generator:
             job.prepare_logit_mask()
             job.prepare_sampling_past_ids()
 
-        # TODO: Batch sampling
-
         # Pass to jobs to sample
         completed_jobs = []
         requeuing_jobs = []
         j = 0
+
         for job, a, b in zip(self.active_jobs, logit_mapping[:-1], logit_mapping[1:]):
             if a == b: continue
             job_logits = batch_logits[a:b, :, :]
 
-            for i in range(batch_logits.shape[1]):
-                token_logits = job_logits[:, i:i + 1, :]
-                next_token, next_k_tokens, next_k_probs, next_prob = job.receive_logits(
-                    token_logits,
-                )
-                eos, sampled_token, rq = job.receive_sample(
-                    token_logits,
-                    next_token,
-                    next_k_tokens,
-                    next_k_probs,
-                    next_prob,
-                    results,
-                )
+            # OPT5: Batched sampling - process all sequences at once to reduce GPU→CPU syncs
+            # Note: Cannot use batched sampling with speculative decoding (draft_tokens)
+            # because draft verification requires token-by-token sampling
+            use_batched = (
+                OptimizationFlags.ENABLE_BATCHED_SAMPLING and
+                batch_logits.shape[1] > 1 and
+                draft_tokens is None  # ← Critical: batched sampling incompatible with draft verification
+            )
 
-                # Requeue
-                if len(job.sequences) == 1 and rq:
-                    requeuing_jobs.append(job)
-                    break
+            if not use_batched:
+                # Original serial sampling path (preserved for fallback, single-sequence jobs, and speculative decoding)
+                for i in range(batch_logits.shape[1]):
+                    token_logits = job_logits[:, i:i + 1, :]
+                    next_token, next_k_tokens, next_k_probs, next_prob = job.receive_logits(
+                        token_logits,
+                    )
+                    eos, sampled_token, rq = job.receive_sample(
+                        token_logits,
+                        next_token,
+                        next_k_tokens,
+                        next_k_probs,
+                        next_prob,
+                        results,
+                    )
 
-                # EOS
-                if eos:
-                    completed_jobs.append(job)
-                    break
-
-                # Continue sampling from logit batch as long as result matches draft
-                if draft_tokens is not None and i < batch_logits.shape[1] - 1:
-                    if draft_tokens[j, i].item() != sampled_token.item():
-                        rejected = batch_logits.shape[1] - 1 - i
-                        job.rejected_draft_tokens += rejected
-                        for seq in job.sequences:
-                            r = rejected
-                            while r:
-                                pos = seq.kv_position + r
-                                page = seq.allocated_pages[(pos - 1) // PAGE_SIZE]
-                                rp = min(page.kv_position, r)
-                                page.kv_position -= rp
-                                r -= rp
+                    # Requeue
+                    if len(job.sequences) == 1 and rq:
+                        requeuing_jobs.append(job)
                         break
-                    else:
-                        job.accepted_draft_tokens += 1
+
+                    # EOS
+                    if eos:
+                        completed_jobs.append(job)
+                        break
+
+                    # Continue sampling from logit batch as long as result matches draft
+                    if draft_tokens is not None and i < batch_logits.shape[1] - 1:
+                        if draft_tokens[j, i].item() != sampled_token.item():
+                            rejected = batch_logits.shape[1] - 1 - i
+                            job.rejected_draft_tokens += rejected
+                            for seq in job.sequences:
+                                r = rejected
+                                while r:
+                                    pos = seq.kv_position + r
+                                    page = seq.allocated_pages[(pos - 1) // PAGE_SIZE]
+                                    rp = min(page.kv_position, r)
+                                    page.kv_position -= rp
+                                    r -= rp
+                            break
+                        else:
+                            job.accepted_draft_tokens += 1
+            else:
+                # New batched path: sample all sequences in one GPU operation
+                # Only used when draft_tokens is None (no speculative decoding)
+                next_tokens, next_k_tokens, next_k_probs, next_prob = job.receive_logits_batched(job_logits)
+
+                # Process each sequence's sampled token
+                for i in range(batch_logits.shape[1]):
+                    # Extract token for this sequence
+                    next_token = next_tokens[:, i:i + 1]
+
+                    # Prepare per-sequence tensors for receive_sample
+                    token_logits = job_logits[:, i:i + 1, :]
+                    seq_next_k_tokens = next_k_tokens[:, i:i + 1, :] if next_k_tokens is not None else None
+                    seq_next_k_probs = next_k_probs[:, i:i + 1, :] if next_k_probs is not None else None
+                    seq_next_prob = next_prob[:, i:i + 1] if next_prob is not None else None
+
+                    eos, sampled_token, rq = job.receive_sample(
+                        token_logits,
+                        next_token,
+                        seq_next_k_tokens,
+                        seq_next_k_probs,
+                        seq_next_prob,
+                        results,
+                    )
+
+                    # Requeue
+                    if len(job.sequences) == 1 and rq:
+                        requeuing_jobs.append(job)
+                        break
+
+                    # EOS
+                    if eos:
+                        completed_jobs.append(job)
+                        break
+
+                    # No draft verification needed here (draft_tokens is None)
             j += 1
 
         # Release pages for completed jobs
