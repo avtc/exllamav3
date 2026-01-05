@@ -215,7 +215,9 @@ class MLP(Module):
             else: d += d_
             del d_
 
-        if self.tp_reduce:
+        # OPT2: Skip all-reduce here if fused all-reduce is enabled
+        # The all-reduce will be done once at the end of TransformerBlock
+        if self.tp_reduce and not params.get("_skip_tp_reduce"):
             params["backend"].all_reduce(d)
 
         return to2(d, out_dtype, self.out_dtype)
@@ -648,7 +650,9 @@ class GatedMLP(Module):
                     else: d += d_
                     del d_
 
-            if self.tp_reduce:
+            # OPT2: Skip all-reduce here if fused all-reduce is enabled
+            # The all-reduce will be done once at the end of TransformerBlock
+            if self.tp_reduce and not params.get("_skip_tp_reduce"):
                 params["backend"].all_reduce(d)
 
         return to2(d, out_dtype, self.out_dtype)
