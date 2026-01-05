@@ -248,8 +248,74 @@ void pg_all_reduce_kernel
         ctx->reduce_stage_produced[this_rank] = 0;
         __threadfence_system();
     }
-}
+__global__ __launch_bounds__(MAX_NUM_THREADS)
+void pg_all_reduce_small_kernel
+(
+    PGContext* __restrict__ ctx,
+    const uint32_t device_mask,
+    int this_device,
+    int master_device,
+    uint8_t* __restrict__ data_ptr,
+    uint8_t* __restrict__ shbuf_ptr,
+    const size_t data_size,
+    const size_t shbuf_size,
+    uint32_t* abort_flag
+)
+{
+    int t = threadIdx.x;
+    int num_ranks = __popc(device_mask);
+    if (num_ranks <= 1) return;
+    int this_rank = __popc(device_mask & ((1 << this_device) - 1));
 
+    size_t rank_shbuf_size = shbuf_size / num_ranks;
+    // Safety check handled by caller or assume it fits
+
+    uint8_t* my_shbuf_ptr = shbuf_ptr + this_rank * rank_shbuf_size;
+    uint8_t* data_end = data_ptr + data_size;
+
+    // 1. Write to shared buffer
+    uint8_t* src = data_ptr + t * 16;
+    uint8_t* dst = my_shbuf_ptr + t * 16;
+    
+    // Copy in float4/uint4 chunks (16 bytes)
+    while (src < data_end)
+    {
+        *((uint4*)dst) = *((uint4*)src);
+        src += blockDim.x * 16;
+        dst += blockDim.x * 16;
+    }
+    
+    // 2. Sync
+    pg_barrier_inner(ctx, device_mask, this_device, master_device, abort_flag);
+    if (*abort_flag) return;
+
+    // 3. Read and Reduce
+    for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
+    {
+        float4 acc = {0.0f, 0.0f, 0.0f, 0.0f}; 
+        bool first = true;
+        
+        for (int r = 0; r < num_ranks; ++r)
+        {
+             uint8_t* r_ptr = shbuf_ptr + r * rank_shbuf_size + offset;
+             float4 val = *((float4*)r_ptr);
+             
+             if (first) { acc = val; first = false; }
+             else 
+             {
+                 acc.x += val.x;
+                 acc.y += val.y;
+                 acc.z += val.z;
+                 acc.w += val.w;
+             }
+        }
+        
+        *((float4*)(data_ptr + offset)) = acc;
+    }
+
+    // Finished. Sync/Barrier
+    pg_barrier_inner(ctx, device_mask, this_device, master_device, abort_flag);
+}
 
 void pg_all_reduce
 (
@@ -275,36 +341,76 @@ void pg_all_reduce
     uint32_t device_mask = 0;
     for (int i : devices) device_mask |= (1 << i);
     long num_ranks = devices.size();
-
-    int threads = (int) CEIL_DIVIDE(CEIL_DIVIDE(data_size / 16ll, num_ranks), 32ll) * 32ll;
-    threads = MIN(threads, MAX_NUM_THREADS);
-
+    
     uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
-    void* kernelArgs[] =
+    
+    // Heuristic for direct reduce
+    size_t rank_shbuf_capacity = shbuf_size / num_ranks;
+    // 512KB threshold
+    bool direct_reduce = (data_size <= rank_shbuf_capacity) && (data_size <= 512 * 1024);
+    
+    uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
+
+    if (direct_reduce)
     {
-        (void*)& ctx,
-        (void*)& device_mask,
-        (void*)& this_device,
-        (void*)& master_device,
-        (void*)& data_ptr,
-        (void*)& shbuf_ptr,
-        (void*)& data_size,
-        (void*)& shbuf_size,
-        (void*)& abort_flag_ptr
-    };
+        int threads = MAX_NUM_THREADS;
+        if (data_size < threads * 16) threads = CEIL_DIVIDE(data_size, 16);
+        threads = ((threads + 31) / 32) * 32;
 
-    dim3 block_grid(2);
-    dim3 block_dim(threads);
+        void* kernelArgs[] =
+        {
+            (void*)& ctx,
+            (void*)& device_mask,
+            (void*)& this_device,
+            (void*)& master_device,
+            (void*)& data_ptr,
+            (void*)& shbuf_ptr,
+            (void*)& data_size,
+            (void*)& shbuf_size,
+            (void*)& abort_flag_ptr
+        };
 
-    cudaLaunchCooperativeKernel
-    (
-        (void*)pg_all_reduce_kernel,
-        block_grid,
-        block_dim,
-        kernelArgs,
-        0,
-        stream
-    );
+        cudaLaunchCooperativeKernel
+        (
+            (void*)pg_all_reduce_small_kernel,
+            dim3(1), 
+            dim3(threads),
+            kernelArgs,
+            0,
+            stream
+        );
+    }
+    else
+    {
+        int threads = (int) CEIL_DIVIDE(CEIL_DIVIDE(data_size / 16ll, num_ranks), 32ll) * 32ll;
+        threads = MIN(threads, MAX_NUM_THREADS);
+
+        void* kernelArgs[] =
+        {
+            (void*)& ctx,
+            (void*)& device_mask,
+            (void*)& this_device,
+            (void*)& master_device,
+            (void*)& data_ptr,
+            (void*)& shbuf_ptr,
+            (void*)& data_size,
+            (void*)& shbuf_size,
+            (void*)& abort_flag_ptr
+        };
+
+        dim3 block_grid(2);
+        dim3 block_dim(threads);
+
+        cudaLaunchCooperativeKernel
+        (
+            (void*)pg_all_reduce_kernel,
+            block_grid,
+            block_dim,
+            kernelArgs,
+            0,
+            stream
+        );
+    }
 
     cuda_check(cudaPeekAtLastError());
 }
