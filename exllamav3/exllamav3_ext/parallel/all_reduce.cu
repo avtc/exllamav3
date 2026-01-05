@@ -248,6 +248,8 @@ void pg_all_reduce_kernel
         ctx->reduce_stage_produced[this_rank] = 0;
         __threadfence_system();
     }
+}
+
 __global__ __launch_bounds__(MAX_NUM_THREADS)
 void pg_all_reduce_small_kernel
 (
