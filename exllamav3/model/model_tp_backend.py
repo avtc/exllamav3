@@ -374,6 +374,17 @@ class TPBackendNative:
             ext.pg_init_context(self.ptr_g)
 
 
+        # OPT8: Allocate P2P VRAM buffer
+        if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0:
+            # Same size as regular reduction buffer (size_r)
+            self.tensor_p2p = torch.zeros((size_r,), dtype=torch.uint8, device=self.device)
+            self.ptr_p2p = self.tensor_p2p.data_ptr()
+            log_tp(device, f"Allocated P2P buffer: {size_r} bytes")
+        else:
+            self.tensor_p2p = None
+            self.ptr_p2p = 0
+
+
     def close(self):
         if not self.cpu:
             log_tp(self.device, f"Host unregister G")
@@ -403,15 +414,7 @@ class TPBackendNative:
             self.shm_s.unlink()
 
 
-        # OPT8: Allocate P2P VRAM buffer
-        if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0:
-            # Same size as regular reduction buffer (size_r)
-            self.tensor_p2p = torch.zeros((size_r,), dtype=torch.uint8, device=self.device)
-            self.ptr_p2p = self.tensor_p2p.data_ptr()
-            log_tp(device, f"Allocated P2P buffer: {size_r} bytes")
-        else:
-            self.tensor_p2p = None
-            self.ptr_p2p = 0
+
 
     def register_p2p(self):
         if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0 and self.tensor_p2p is not None:
