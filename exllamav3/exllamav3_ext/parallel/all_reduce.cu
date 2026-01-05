@@ -316,7 +316,7 @@ void pg_all_reduce_p2p_kernel
              if (!p2p_ptrs_s[dev]) continue;
              
              uint8_t* r_ptr = p2p_ptrs_s[dev] + offset;
-             float4 val = *((float4*)r_ptr);
+             float4 val = *((volatile float4*)r_ptr);
              
              if (first) { acc = val; first = false; }
              else 
