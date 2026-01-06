@@ -39,3 +39,14 @@ void end_cpu_reduce_jobs
 (
     uintptr_t ctx_ptr
 );
+
+// vLLM-style P2P all-reduce with GPU-only barriers
+void pg_all_reduce_p2p_v2
+(
+    uintptr_t ctx,
+    std::vector<uintptr_t> devices,
+    int this_device,
+    int master_device,
+    at::Tensor& tensor,
+    uintptr_t p2p_barrier
+);

@@ -1,6 +1,5 @@
 import torch
 import traceback
-import os
 from .model_tp_shared import SMProducer, SMConsumer
 from ..ext import exllamav3_ext as ext
 from functools import lru_cache
@@ -61,11 +60,6 @@ def init_pg(device: int, active_devices: list[int], output_device: int, backend_
                 # Step 4: Synchronous barrier - ensure all devices have opened peer handles
                 backend.sync_barrier()
                 log_tp(device, "All P2P handles opened, initialization complete")
-
-                # Optional: Run P2P verification after all handles are opened
-                if os.getenv("EXLLAMA_P2P_VERIFY", "0") == "1":
-                    log_tp(device, "Running P2P verification...")
-                    ext.pg_verify_p2p(backend.ptr_g, backend.active_devices, device)
         case _:
             raise ValueError("Unknown backend type")
 

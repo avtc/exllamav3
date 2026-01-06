@@ -148,129 +148,40 @@ void pg_mem_free(uintptr_t ptr)
     }
 }
 
-// Optional: P2P verification kernel (for debugging)
-__global__ void pg_verify_p2p_kernel_impl
-(
-    void** p2p_ptrs,
-    uint32_t device_mask,
-    int this_device,
-    uint32_t* result
-)
+// vLLM-style P2P barrier implementation
+static P2PBarrier* g_p2p_barrier = nullptr;
+
+void* pg_p2p_barrier_create()
 {
-    if (threadIdx.x != 0) return;
-    
-    // Check if my pointer is valid
-    uint8_t* my_ptr = (uint8_t*)p2p_ptrs[this_device];
-    if (!my_ptr) {
-        printf("Device %d: My P2P pointer is NULL!\n", this_device);
-        atomicOr(result, 1);
-        return;
+    if (g_p2p_barrier != nullptr) {
+        printf("ExLlamaV3: P2P barrier already created\n");
+        return (void*)g_p2p_barrier;
     }
-    
-    // Try to write and read from my buffer
-    volatile uint32_t* test_ptr = (volatile uint32_t*)my_ptr;
-    uint32_t test_value = 0x12345678 + this_device;
-    test_ptr[0] = test_value;
-    __threadfence_system();
-    
-    uint32_t readback = test_ptr[0];
-    if (readback != test_value) {
-        printf("Device %d: Write-read test FAILED (wrote 0x%x, read 0x%x)\n", 
-               this_device, test_value, readback);
-        atomicOr(result, 2);
-        return;
+
+    P2PBarrier* barrier = nullptr;
+    cudaError_t err = cudaMalloc(&barrier, sizeof(P2PBarrier));
+    if (err != cudaSuccess) {
+        printf("ExLlamaV3: Failed to allocate P2P barrier: %s\n", cudaGetErrorString(err));
+        return nullptr;
     }
-    
-    // Check peer pointers
-    for (int dev = 0; dev < MAX_DEVICES; ++dev) {
-        if (!((device_mask >> dev) & 1)) continue;
-        if (dev == this_device) continue;
-        
-        uint8_t* peer_ptr = (uint8_t*)p2p_ptrs[dev];
-        if (!peer_ptr) {
-            printf("Device %d: Peer %d pointer is NULL!\n", this_device, dev);
-            atomicOr(result, 4);
-        } else {
-            // Try to read from peer (basic connectivity test)
-            volatile uint32_t* peer_test = (volatile uint32_t*)peer_ptr;
-            uint32_t peer_val = peer_test[0];
-            // Just reading is enough to test connectivity
-            (void)peer_val;
-        }
+
+    err = cudaMemset(barrier, 0, sizeof(P2PBarrier));
+    if (err != cudaSuccess) {
+        printf("ExLlamaV3: Failed to initialize P2P barrier: %s\n", cudaGetErrorString(err));
+        cudaFree(barrier);
+        return nullptr;
     }
-    
-    printf("Device %d: P2P verification completed\n", this_device);
+
+    g_p2p_barrier = barrier;
+    printf("ExLlamaV3: Created P2P barrier at %p\n", barrier);
+    return (void*)barrier;
 }
 
-void pg_verify_p2p(uintptr_t ctx, std::vector<uintptr_t> devices, int this_device)
+void pg_p2p_barrier_init(uintptr_t ctx, uintptr_t barrier_ptr)
 {
-    const at::cuda::OptionalCUDAGuard device_guard(this_device);
-    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
-    
-    // Collect all P2P pointers
-    void* p2p_ptrs_host[MAX_DEVICES];
-    for(int i=0; i<MAX_DEVICES; ++i) {
-        p2p_ptrs_host[i] = pg_get_p2p_ptr(i);
-    }
-    
-    // Copy to device
-    void** p2p_ptrs_dev;
-    cudaError_t err = cudaMalloc(&p2p_ptrs_dev, MAX_DEVICES * sizeof(void*));
-    if (err != cudaSuccess) {
-        printf("ExLlamaV3: P2P verify cudaMalloc failed for p2p_ptrs_dev: %s\n",
-               cudaGetErrorString(err));
-        return;
-    }
-    err = cudaMemcpy(p2p_ptrs_dev, p2p_ptrs_host, MAX_DEVICES * sizeof(void*), cudaMemcpyHostToDevice);
-    if (err != cudaSuccess) {
-        printf("ExLlamaV3: P2P verify cudaMemcpy failed: %s\n", cudaGetErrorString(err));
-        cudaFree(p2p_ptrs_dev);
-        return;
-    }
-
-    uint32_t device_mask = 0;
-    for (int i : devices) device_mask |= (1 << i);
-
-    // Allocate result buffer on device
-    uint32_t* result_dev;
-    err = cudaMalloc(&result_dev, sizeof(uint32_t));
-    if (err != cudaSuccess) {
-        printf("ExLlamaV3: P2P verify cudaMalloc failed for result_dev: %s\n",
-               cudaGetErrorString(err));
-        cudaFree(p2p_ptrs_dev);
-        return;
-    }
-    err = cudaMemset(result_dev, 0, sizeof(uint32_t));
-    if (err != cudaSuccess) {
-        printf("ExLlamaV3: P2P verify cudaMemset failed: %s\n", cudaGetErrorString(err));
-        cudaFree(result_dev);
-        cudaFree(p2p_ptrs_dev);
-        return;
-    }
-
-    pg_verify_p2p_kernel_impl<<<1, 32, 0, stream>>>(
-        p2p_ptrs_dev, device_mask, this_device, result_dev
-    );
-
-    err = cudaStreamSynchronize(stream);
-    if (err != cudaSuccess) {
-        printf("ExLlamaV3: P2P verify cudaStreamSynchronize failed: %s\n",
-               cudaGetErrorString(err));
-        cudaFree(result_dev);
-        cudaFree(p2p_ptrs_dev);
-        return;
-    }
-
-    uint32_t status;
-    err = cudaMemcpy(&status, result_dev, sizeof(uint32_t), cudaMemcpyDeviceToHost);
-    if (err != cudaSuccess) {
-        printf("ExLlamaV3: P2P verify cudaMemcpy failed: %s\n", cudaGetErrorString(err));
-    } else if (status == 0) {
-        printf("Device %d: P2P verification PASSED ✓\n", this_device);
-    } else {
-        printf("Device %d: P2P verification FAILED ✗ (status=0x%x)\n", this_device, status);
-    }
-
-    cudaFree(result_dev);
-    cudaFree(p2p_ptrs_dev);
+    // Store barrier pointer in context for access from kernels
+    PGContext* context = (PGContext*)ctx;
+    // For now, we'll use the global pointer
+    // In a multi-context setup, you'd store this per-context
 }
+

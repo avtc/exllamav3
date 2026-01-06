@@ -55,5 +55,14 @@ void* pg_get_p2p_ptr(int device);
 uintptr_t pg_mem_alloc(size_t size);
 void pg_mem_free(uintptr_t ptr);
 
-// Optional: P2P verification (for debugging)
-void pg_verify_p2p(uintptr_t ctx, std::vector<uintptr_t> devices, int this_device);
+// vLLM-style P2P barrier structure
+struct P2PBarrier
+{
+    alignas(128) uint32_t start[MAX_DEVICES][MAX_DEVICES];  // [writer][reader]
+    alignas(128) uint32_t end[MAX_DEVICES][MAX_DEVICES];
+    alignas(128) uint32_t flag[MAX_DEVICES];  // Incremental flags per rank
+};
+
+// P2P barrier functions (pure GPU, no CPU polling)
+void pg_p2p_barrier_init(uintptr_t ctx, uintptr_t barrier_ptr);
+void* pg_p2p_barrier_create();

@@ -11,6 +11,7 @@ namespace cg = cooperative_groups;
 #include "timeout.cuh"
 #include "ll.cuh"
 #include "barrier_inner.cuh"
+#include "p2p_barrier.cuh"
 
 #define MAX_NUM_THREADS 1024
 #define BATCH_STAGE 2
@@ -339,8 +340,97 @@ void pg_all_reduce_p2p_kernel
     __threadfence_system();
     __syncthreads();
 
-    // Phase 4: Final barrier
-    pg_barrier_inner(ctx, device_mask, this_device, master_device, abort_flag);
+    // No final barrier needed - results written to local memory
+    // Other devices will read their own copies in Phase 3
+}
+
+// vLLM-style P2P all-reduce kernel with GPU-only barriers
+__global__ __launch_bounds__(MAX_NUM_THREADS)
+void pg_all_reduce_p2p_kernel_v2
+(
+    PGContext* __restrict__ ctx,
+    const uint32_t device_mask,
+    int this_device,
+    uint8_t* __restrict__ data_ptr,
+    const size_t data_size,
+    P2PBarrier* __restrict__ barrier,  // vLLM-style barrier
+    P2PPtrs p2p_ptrs
+)
+{
+    int t = threadIdx.x;
+    int num_ranks = __popc(device_mask);
+    if (num_ranks <= 1) return;
+
+    // Load P2P pointers into shared memory for faster access
+    extern __shared__ uint8_t smem[];
+    uint8_t** p2p_ptrs_s = (uint8_t**)smem;
+
+    if (t < MAX_DEVICES)
+    {
+        if ((device_mask >> t) & 1)
+            p2p_ptrs_s[t] = (uint8_t*)p2p_ptrs.ptrs[t];
+        else
+            p2p_ptrs_s[t] = nullptr;
+    }
+    __syncthreads();
+
+    // Validate our P2P pointer
+    uint8_t* my_p2p_ptr = p2p_ptrs_s[this_device];
+    if (!my_p2p_ptr)
+    {
+        if (t == 0) {
+            printf("ExLlamaV3: P2P ERROR - Device %d has no P2P pointer!\n", this_device);
+        }
+        return;
+    }
+
+    // Phase 1: Copy local data to P2P buffer
+    for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
+    {
+        *((uint4*)(my_p2p_ptr + offset)) = *((uint4*)(data_ptr + offset));
+    }
+
+    // Ensure all writes are visible system-wide
+    __threadfence_system();
+    __syncthreads();
+
+    // Phase 2: vLLM-style P2P barrier - wait for all GPUs (GPU-only, no CPU polling)
+    p2p_barrier_vllm_style(barrier, this_device, num_ranks, true);
+
+    // Phase 3: Reduce - read from all P2P buffers and accumulate
+    for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
+    {
+        float4 sum = {0.0f, 0.0f, 0.0f, 0.0f};
+
+        // Accumulate from all active devices
+        for (int dev = 0; dev < MAX_DEVICES; ++dev)
+        {
+            if (!p2p_ptrs_s[dev]) continue;
+
+            // Use volatile pointer for system-wide visibility
+            volatile float4* remote_ptr = (volatile float4*)(p2p_ptrs_s[dev] + offset);
+            float4 val;
+            val.x = remote_ptr->x;
+            val.y = remote_ptr->y;
+            val.z = remote_ptr->z;
+            val.w = remote_ptr->w;
+
+            sum.x += val.x;
+            sum.y += val.y;
+            sum.z += val.z;
+            sum.w += val.w;
+        }
+
+        // Write result back to local data
+        *((float4*)(data_ptr + offset)) = sum;
+    }
+
+    // Ensure all threads finished writing
+    __threadfence_system();
+    __syncthreads();
+
+    // No final barrier needed - results written to local memory
+    // Other devices will read their own copies in Phase 3
 }
 
 __global__ __launch_bounds__(MAX_NUM_THREADS)
@@ -603,6 +693,95 @@ void pg_all_reduce
 
     cuda_check(cudaPeekAtLastError());
 }
+
+// vLLM-style P2P all-reduce with GPU-only barriers
+void pg_all_reduce_p2p_v2
+(
+    uintptr_t ctx,
+    std::vector<uintptr_t> devices,
+    int this_device,
+    int master_device,
+    at::Tensor& tensor,
+    uintptr_t p2p_barrier  // P2PBarrier pointer
+)
+{
+    const at::cuda::OptionalCUDAGuard device_guard(this_device);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+    pg_check_timeout(ctx);
+
+    uint8_t* data_ptr = (uint8_t*) tensor.data_ptr();
+    size_t data_size = tensor.numel() * tensor.element_size();
+    TORCH_CHECK(data_size % 16 == 0, "data_size must be multiple of 16");
+
+    uint32_t device_mask = 0;
+    for (int i : devices) device_mask |= (1 << i);
+    long num_ranks = devices.size();
+
+    if (num_ranks <= 1) return;
+
+    // Validate P2P barrier pointer
+    if (p2p_barrier == 0)
+    {
+        printf("ExLlamaV3: [Device %d] P2P v2: Barrier pointer is NULL, falling back\n", this_device);
+        return;
+    }
+
+    // Collect P2P pointers
+    P2PPtrs p2p_ptrs;
+    bool all_valid = true;
+    for (int i = 0; i < MAX_DEVICES; ++i)
+    {
+        p2p_ptrs.ptrs[i] = pg_get_p2p_ptr(i);
+        if ((device_mask >> i) & 1 && !p2p_ptrs.ptrs[i])
+        {
+            all_valid = false;
+        }
+    }
+
+    if (!all_valid)
+    {
+        printf("ExLlamaV3: [Device %d] P2P v2: Some peer pointers missing, falling back\n", this_device);
+        return;
+    }
+
+    // Check data size fits in P2P buffer
+    size_t p2p_buffer_size = 17 * 128 * 1024; // Match SHBUF_SIZE_R
+    if (data_size > p2p_buffer_size)
+    {
+        printf("ExLlamaV3: [Device %d] P2P v2: Data too large (%zu > %zu), falling back\n",
+               this_device, data_size, p2p_buffer_size);
+        return;
+    }
+
+    // Launch v2 kernel with GPU-only barriers
+    int threads = MAX_NUM_THREADS;
+    if (data_size < threads * 16) threads = CEIL_DIVIDE(data_size, 16);
+    threads = ((threads + 31) / 32) * 32;
+
+    void* kernelArgs[] =
+    {
+        (void*)& ctx,
+        (void*)& device_mask,
+        (void*)& this_device,
+        (void*)& data_ptr,
+        (void*)& data_size,
+        (void*)& p2p_barrier,
+        (void*)& p2p_ptrs
+    };
+
+    cudaLaunchCooperativeKernel
+    (
+        (void*)pg_all_reduce_p2p_kernel_v2,
+        dim3(1),
+        dim3(threads),
+        kernelArgs,
+        sizeof(uint8_t*) * MAX_DEVICES,  // Shared memory for pointer array
+        stream
+    );
+
+    cuda_check(cudaPeekAtLastError());
+}
+
 
 __global__ void pg_verify_p2p_kernel
 (

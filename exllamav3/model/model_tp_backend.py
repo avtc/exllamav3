@@ -384,6 +384,7 @@ class TPBackendNative:
         # OPT8: Allocate P2P VRAM buffer - MUST match size_r (CPU reduce buffer)
         self.ptr_p2p = 0
         self.p2p_buffer_size = 0
+        self.ptr_p2p_barrier = 0  # vLLM-style P2P barrier structure
         
         if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0:
             # Use same size as CPU reduce buffer
@@ -490,6 +491,10 @@ class TPBackendNative:
             ext.pg_open_p2p_handles(self.ptr_g, self.device, self.ptr_p2p)
             log_tp(self.device, f"P2P handles opened successfully")
 
+            # Initialize vLLM-style P2P barrier (GPU-only synchronization)
+            self.ptr_p2p_barrier = ext.pg_p2p_barrier_create()
+            log_tp(self.device, f"P2P barrier created at 0x{self.ptr_p2p_barrier:x}")
+
             # Note: P2P verification is now called after the second barrier in model_tp_fn.py
             # to ensure all devices have opened their handles before verification
 
@@ -552,6 +557,29 @@ class TPBackendNative:
         )
 
         tensor_bytes = tensor.numel() * tensor.element_size()
+
+        # vLLM-style P2P v2 (when P2P barrier is available)
+        if (use_gpu_reduce and
+            OptimizationFlags.ENABLE_P2P_TRANSFER and
+            self.ptr_p2p_barrier != 0):
+
+            # Track statistics
+            TPBackendNative._gpu_reduce_count += 1
+            TPBackendNative._total_bytes_gpu += tensor_bytes
+
+            # Log first few calls for debugging
+            if TPBackendNative._gpu_reduce_count <= 5:
+                log_tp(self.device, f"All-reduce: P2P v2 path (GPU-only barriers, {tensor.numel()} elems, {tensor_bytes//1024} KB)")
+
+            ext.pg_all_reduce_p2p_v2(
+                self.ptr_g,
+                self.active_devices,
+                self.device,
+                self.active_devices[0],
+                tensor,
+                self.ptr_p2p_barrier
+            )
+            return
 
         if use_gpu_reduce:
             # GPU-based ring all-reduce (direct GPU-to-GPU, can use P2P)
