@@ -437,40 +437,71 @@ void pg_all_reduce
     for (int i : devices) device_mask |= (1 << i);
     long num_ranks = devices.size();
     
-    // Check P2P availability
-    static bool p2p_checked = false;
+    // Check P2P availability with retry logic
+    // After the second barrier in init_pg(), all devices should have opened handles
     static bool p2p_active = false;
     static P2PPtrs cached_p2p_ptrs;
-    
-    if (!p2p_checked)
+    static int p2p_validation_attempts = 0;
+    static const int MAX_P2P_RETRIES = 100;  // Retry for up to ~10 seconds total
+
+    // Re-validate until success or max retries (in case some devices are slow to initialize)
+    if (!p2p_active && p2p_validation_attempts < MAX_P2P_RETRIES)
     {
         void* my_ptr = pg_get_p2p_ptr(this_device);
-        if (my_ptr) 
+        if (my_ptr)
         {
-            p2p_active = true;
             // Populate cache - validate all pointers
             bool all_valid = true;
+            int missing_count = 0;
+            int missing_devices[MAX_DEVICES];
+
             for(int i=0; i<MAX_DEVICES; ++i) {
                 cached_p2p_ptrs.ptrs[i] = pg_get_p2p_ptr(i);
                 if ((device_mask >> i) & 1) {
                     if (!cached_p2p_ptrs.ptrs[i]) {
-                        printf("ExLlamaV3: P2P ERROR - Device %d in mask but has no pointer!\n", i);
+                        missing_devices[missing_count++] = i;
                         all_valid = false;
                     }
                 }
             }
+
+            p2p_validation_attempts++;
+
             if (all_valid) {
-                printf("ExLlamaV3: P2P All-Reduce Active (validated all %ld devices)\n", num_ranks);
+                p2p_active = true;
+                printf("ExLlamaV3: [Device %d] P2P All-Reduce Active (validated all %ld devices on attempt %d)\n",
+                       this_device, num_ranks, p2p_validation_attempts);
             } else {
-                printf("ExLlamaV3: P2P All-Reduce validation FAILED - falling back to host memory\n");
-                p2p_active = false;
+                // Log which devices are missing
+                if (p2p_validation_attempts == 1 || p2p_validation_attempts % 10 == 0) {
+                    printf("ExLlamaV3: [Device %d] P2P validation attempt %d: Missing %d devices - ",
+                           this_device, p2p_validation_attempts, missing_count);
+                    for (int i = 0; i < missing_count && i < 8; ++i) {
+                        printf("%d ", missing_devices[i]);
+                    }
+                    if (missing_count > 8) printf("...");
+                    printf("\n");
+                }
+
+                // On final attempt, give up and fall back to host memory
+                if (p2p_validation_attempts >= MAX_P2P_RETRIES) {
+                    printf("ExLlamaV3: [Device %d] P2P validation FAILED after %d attempts - falling back to host memory\n",
+                           this_device, MAX_P2P_RETRIES);
+                    printf("ExLlamaV3: [Device %d] Missing devices: ", this_device);
+                    for (int i = 0; i < missing_count; ++i) {
+                        printf("%d ", missing_devices[i]);
+                    }
+                    printf("\n");
+                }
             }
         }
         else
         {
-            printf("ExLlamaV3: P2P All-Reduce Not available for device %d\n", this_device);
+            p2p_validation_attempts++;
+            if (p2p_validation_attempts == 1) {
+                printf("ExLlamaV3: [Device %d] P2P All-Reduce Not available (no local P2P pointer)\n", this_device);
+            }
         }
-        p2p_checked = true;
     }
 
     // Get P2P buffer size from context.cu

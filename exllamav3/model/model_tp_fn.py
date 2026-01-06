@@ -45,8 +45,14 @@ def init_pg(device: int, active_devices: list[int], output_device: int, backend_
                 cpu = device < 0
             )
             backend.register_p2p()
+            log_tp(device, "P2P handles registered, waiting for all devices...")
             backend.fwd_barrier()
+            log_tp(device, "All devices registered, opening P2P handles...")
             backend.open_p2p_handles()
+            log_tp(device, "P2P handles opened, waiting for all devices to complete...")
+            # Second barrier to ensure all devices have opened all P2P handles before validation
+            backend.fwd_barrier()
+            log_tp(device, "All P2P handles opened, validation complete")
         case _:
             raise ValueError("Unknown backend type")
 
