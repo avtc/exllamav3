@@ -81,8 +81,14 @@ class OptimizationFlags:
     ENABLE_BUSY_WAIT = os.getenv("EXLLAMA_TP_BUSY_WAIT", "0") == "1"
 
     # OPT8: Use P2P (VRAM) buffers for all-reduce
-    # Requires P2P support between GPUs. avoids host memory roundtrip.
+    # Requires P2P support between GPUs. Avoids host memory roundtrip.
+    # Default: disabled (set to "1" to enable)
     ENABLE_P2P_TRANSFER = os.getenv("EXLLAMA_TP_P2P", "0") == "1"
+    
+    # P2P verification (debug mode)
+    # Runs connectivity tests during initialization
+    # Default: disabled
+    ENABLE_P2P_VERIFY = os.getenv("EXLLAMA_P2P_VERIFY", "0") == "1"
 
     @classmethod
     def log_settings(cls):
@@ -96,7 +102,8 @@ class OptimizationFlags:
         log_tp(-1, f"  CUDA IPC sharing: {cls.ENABLE_CUDA_IPC_SHARING}")
         log_tp(-1, f"  Busy wait: {cls.ENABLE_BUSY_WAIT}")
         log_tp(-1, f"  P2P transfer: {cls.ENABLE_P2P_TRANSFER}")
-
+        if cls.ENABLE_P2P_TRANSFER:
+            log_tp(-1, f"  P2P verify: {cls.ENABLE_P2P_VERIFY}")
 
 class TPBackend:
 
@@ -374,13 +381,30 @@ class TPBackendNative:
             ext.pg_init_context(self.ptr_g)
 
 
-        # OPT8: Allocate P2P VRAM buffer
+        # OPT8: Allocate P2P VRAM buffer - MUST match size_r (CPU reduce buffer)
+        self.ptr_p2p = 0
+        self.p2p_buffer_size = 0
+        
         if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0:
-            # Same size as regular reduction buffer (size_r)
-            self.ptr_p2p = ext.pg_mem_alloc(size_r)
-            log_tp(device, f"Allocated P2P buffer: {size_r} bytes")
+            # Use same size as CPU reduce buffer
+            self.p2p_buffer_size = size_r
+            log_tp(device, f"Attempting to allocate P2P buffer: {size_r} bytes ({size_r/1024/1024:.1f} MB)")
+            
+            try:
+                self.ptr_p2p = ext.pg_mem_alloc(size_r)
+                if self.ptr_p2p == 0:
+                    log_tp(device, f"P2P buffer allocation returned NULL - disabling P2P")
+                else:
+                    log_tp(device, f"P2P buffer allocated successfully at 0x{self.ptr_p2p:x}")
+            except Exception as e:
+                log_tp(device, f"P2P buffer allocation exception: {e}")
+                self.ptr_p2p = 0
         else:
-            self.ptr_p2p = 0
+            if self.device >= 0:
+                log_tp(device, f"P2P disabled by environment variable")
+
+        # CRITICAL: Store buffer size for validation
+        self.p2p_buffer_size = size_r if self.ptr_p2p != 0 else 0
 
 
     def close(self):
@@ -394,9 +418,14 @@ class TPBackendNative:
             log_tp(self.device, f"Host unregister S")
             cuda_host_unregister(self.ptr_s)
         
+        # Free P2P buffer
         if self.ptr_p2p != 0:
-            log_tp(self.device, f"Free P2P buffer")
-            ext.pg_mem_free(self.ptr_p2p)
+            log_tp(self.device, f"Freeing P2P buffer at 0x{self.ptr_p2p:x}")
+            try:
+                ext.pg_mem_free(self.ptr_p2p)
+                log_tp(self.device, f"P2P buffer freed")
+            except Exception as e:
+                log_tp(self.device, f"Error freeing P2P buffer: {e}")
             self.ptr_p2p = 0
             
         self.shm_g.close()
@@ -421,17 +450,55 @@ class TPBackendNative:
 
 
     def register_p2p(self):
-        if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0 and self.ptr_p2p != 0:
-             log_tp(self.device, f"Registering P2P buffer handle")
-             # Get handle from C++
-             handle_bytes = ext.pg_get_ipc_handle(self.ptr_p2p)
-             # Write to context
-             ext.pg_set_p2p_handle(self.ptr_g, self.device, handle_bytes)
+        """Register P2P IPC handle for this device's buffer"""
+        if not OptimizationFlags.ENABLE_P2P_TRANSFER:
+            return
+            
+        if self.device < 0:
+            return
+            
+        if self.ptr_p2p == 0:
+            log_tp(self.device, f"No P2P buffer to register")
+            return
+            
+        log_tp(self.device, f"Registering P2P IPC handle (ptr=0x{self.ptr_p2p:x}, size={self.p2p_buffer_size})")
+        
+        try:
+            handle_bytes = ext.pg_get_ipc_handle(self.ptr_p2p)
+            log_tp(self.device, f"Got IPC handle ({len(handle_bytes)} bytes)")
+            
+            ext.pg_set_p2p_handle(self.ptr_g, self.device, handle_bytes)
+            log_tp(self.device, f"P2P IPC handle registered successfully")
+            
+        except Exception as e:
+            log_tp(self.device, f"P2P registration failed: {e}")
+            import traceback
+            traceback.print_exc()
+            # Don't fail hard - will fall back to host memory
     
     def open_p2p_handles(self):
-        if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0:
-             log_tp(self.device, f"Opening P2P handles")
-             ext.pg_open_p2p_handles(self.ptr_g, self.device, self.ptr_p2p)
+        """Open P2P IPC handles from all peer devices"""
+        if not OptimizationFlags.ENABLE_P2P_TRANSFER:
+            return
+            
+        if self.device < 0:
+            return
+            
+        log_tp(self.device, f"Opening P2P handles from peers")
+        
+        try:
+            ext.pg_open_p2p_handles(self.ptr_g, self.device, self.ptr_p2p)
+            log_tp(self.device, f"P2P handles opened successfully")
+            
+            # Optional: Run verification (comment out in production)
+            if os.getenv("EXLLAMA_P2P_VERIFY", "0") == "1":
+                log_tp(self.device, f"Running P2P verification")
+                ext.pg_verify_p2p(self.ptr_g, self.active_devices, self.device)
+                
+        except Exception as e:
+            log_tp(self.device, f"P2P handle opening failed: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 
@@ -610,3 +677,5 @@ class TPBackendNative:
             ext.end_cpu_reduce_jobs(
                 self.ptr_g,
             )
+
+            

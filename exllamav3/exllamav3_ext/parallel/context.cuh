@@ -41,11 +41,19 @@ struct alignas(64) PGContext
     ReduceJob reduce_jobs[MAX_REDUCE_JOBS];
 };
 
+// Context management
 void pg_init_context(uintptr_t ctx);
 void pg_check_timeout(uintptr_t ctx);
+
+// P2P memory management
 void pg_set_p2p_handle(uintptr_t ctx, int device, const char* handle_bytes);
 void pg_get_ipc_handle(uintptr_t ptr, char* handle_out);
 void pg_open_p2p_handles(uintptr_t ctx, int my_device, uintptr_t my_ptr);
 void* pg_get_p2p_ptr(int device);
+
+// P2P buffer allocation
 uintptr_t pg_mem_alloc(size_t size);
 void pg_mem_free(uintptr_t ptr);
+
+// Optional: P2P verification (for debugging)
+void pg_verify_p2p(uintptr_t ctx, std::vector<uintptr_t> devices, int this_device);

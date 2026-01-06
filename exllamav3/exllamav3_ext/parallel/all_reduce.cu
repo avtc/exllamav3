@@ -262,102 +262,84 @@ void pg_all_reduce_p2p_kernel
     uint8_t* __restrict__ data_ptr,
     const size_t data_size,
     uint32_t* abort_flag,
-    P2PPtrs p2p_ptrs // Passed by value
+    P2PPtrs p2p_ptrs
 )
 {
     int t = threadIdx.x;
     int num_ranks = __popc(device_mask);
     if (num_ranks <= 1) return;
-    int this_rank = __popc(device_mask & ((1 << this_device) - 1));
 
-    // Load my P2P pointer
-    uint8_t* my_p2p_ptr = (uint8_t*)p2p_ptrs.ptrs[this_device];
-    if (!my_p2p_ptr) 
-    {
-        printf("ExLlamaV3: P2P FATAL: Rank %d has no P2P pointer!\n", this_device);
-        *abort_flag = 1; 
-        return; 
-    }
-
-    uint8_t* data_end = data_ptr + data_size;
-
-    // 1. Copy data to my P2P buffer (Publish)
-    uint8_t* src = data_ptr + t * 16;
-    uint8_t* dst = my_p2p_ptr + t * 16;
-    
-    while (src < data_end)
-    {
-        *((uint4*)dst) = *((uint4*)src);
-        src += blockDim.x * 16;
-        dst += blockDim.x * 16;
-    }
-    
-    // Ensure writes to P2P buffer are visible to peers
-    __threadfence_system();
-    __syncthreads(); // Ensure all threads finished writing
-
-    // 2. Sync
-    pg_barrier_inner(ctx, device_mask, this_device, master_device, abort_flag);
-    if (*abort_flag) return;
-
-    // 3. Read and Reduce from Peers
-    extern __shared__ uint8_t* p2p_ptrs_s[];
+    // Load P2P pointers into shared memory for faster access
+    extern __shared__ uint8_t smem[];
+    uint8_t** p2p_ptrs_s = (uint8_t**)smem;
     
     if (t < MAX_DEVICES)
     {
-         if ((device_mask >> t) & 1)
+        if ((device_mask >> t) & 1)
             p2p_ptrs_s[t] = (uint8_t*)p2p_ptrs.ptrs[t];
-         else
+        else
             p2p_ptrs_s[t] = nullptr;
     }
     __syncthreads();
 
-    for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
+    // Validate our P2P pointer
+    uint8_t* my_p2p_ptr = p2p_ptrs_s[this_device];
+    if (!my_p2p_ptr) 
     {
-        float4 acc = {0.0f, 0.0f, 0.0f, 0.0f}; 
-        bool first = true;
-        
-        for (int dev = 0; dev < MAX_DEVICES; ++dev)
-        {
-             if (!p2p_ptrs_s[dev]) 
-             {
-                 // If this device is supposed to be active (in mask) but has no pointer, it's an error.
-                 // However, p2p_ptrs_s[dev] is set to nullptr if NOT in mask.
-                 // We need to check if it SHOULD be there.
-                 if ((device_mask >> dev) & 1) 
-                 {
-                     printf("ExLlamaV3: P2P FATAL: Rank %d missing peer pointer for Rank %d!\n", this_device, dev);
-                     *abort_flag = 1;
-                 }
-                 continue;
-             }
-             
-             uint8_t* r_ptr = p2p_ptrs_s[dev] + offset;
-             volatile float4* v_ptr = (volatile float4*)r_ptr;
-             float4 val;
-             val.x = v_ptr->x;
-             val.y = v_ptr->y;
-             val.z = v_ptr->z;
-             val.w = v_ptr->w;
-             
-             if (first) { acc = val; first = false; }
-             else 
-             {
-                 acc.x += val.x;
-                 acc.y += val.y;
-                 acc.z += val.z;
-                 acc.w += val.w;
-             }
+        if (t == 0) {
+            printf("ExLlamaV3: P2P ERROR - Device %d has no P2P pointer!\n", this_device);
+            *abort_flag = 1;
         }
-        
-        *((float4*)(data_ptr + offset)) = acc;
+        return;
     }
 
-    // Ensure output writes are visible
+    // Phase 1: Copy local data to P2P buffer
+    for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
+    {
+        *((uint4*)(my_p2p_ptr + offset)) = *((uint4*)(data_ptr + offset));
+    }
+    
+    // Ensure all writes are visible system-wide
     __threadfence_system();
     __syncthreads();
 
-    // Finished. Sync/Barrier
+    // Phase 2: Barrier - wait for all GPUs to finish writing
+    pg_barrier_inner(ctx, device_mask, this_device, master_device, abort_flag);
+    if (*abort_flag) return;
+
+    // Phase 3: Reduce - read from all P2P buffers and accumulate
+    for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
+    {
+        float4 sum = {0.0f, 0.0f, 0.0f, 0.0f};
+        
+        // Accumulate from all active devices
+        for (int dev = 0; dev < MAX_DEVICES; ++dev)
+        {
+            if (!p2p_ptrs_s[dev]) continue;
+            
+            // Use volatile pointer for system-wide visibility
+            volatile float4* remote_ptr = (volatile float4*)(p2p_ptrs_s[dev] + offset);
+            float4 val;
+            val.x = remote_ptr->x;
+            val.y = remote_ptr->y;
+            val.z = remote_ptr->z;
+            val.w = remote_ptr->w;
+            
+            sum.x += val.x;
+            sum.y += val.y;
+            sum.z += val.z;
+            sum.w += val.w;
+        }
+        
+        // Write result back to local data
+        *((float4*)(data_ptr + offset)) = sum;
+    }
+
+    // Ensure all threads finished writing
+    __threadfence_system();
+    __syncthreads();
+
+    // Phase 4: Final barrier
     pg_barrier_inner(ctx, device_mask, this_device, master_device, abort_flag);
 }
 
@@ -455,36 +437,49 @@ void pg_all_reduce
     for (int i : devices) device_mask |= (1 << i);
     long num_ranks = devices.size();
     
-    // Check P2P availability locally (Optimized: Lazy static check)
+    // Check P2P availability
     static bool p2p_checked = false;
     static bool p2p_active = false;
-    static P2PPtrs cached_p2p_ptrs; // Cache pointers once
+    static P2PPtrs cached_p2p_ptrs;
     
     if (!p2p_checked)
     {
-        // Check if we have a pointer for OUR device. 
-        // If we do, we assume P2P was set up correctly for this context.
-        if (pg_get_p2p_ptr(this_device)) 
+        void* my_ptr = pg_get_p2p_ptr(this_device);
+        if (my_ptr) 
         {
-             p2p_active = true;
-             // Populate cache
-             for(int i=0; i<MAX_DEVICES; ++i) cached_p2p_ptrs.ptrs[i] = pg_get_p2p_ptr(i);
-             printf("ExLlamaV3: P2P All-Reduce Active\n");
+            p2p_active = true;
+            // Populate cache - validate all pointers
+            bool all_valid = true;
+            for(int i=0; i<MAX_DEVICES; ++i) {
+                cached_p2p_ptrs.ptrs[i] = pg_get_p2p_ptr(i);
+                if ((device_mask >> i) & 1) {
+                    if (!cached_p2p_ptrs.ptrs[i]) {
+                        printf("ExLlamaV3: P2P ERROR - Device %d in mask but has no pointer!\n", i);
+                        all_valid = false;
+                    }
+                }
+            }
+            if (all_valid) {
+                printf("ExLlamaV3: P2P All-Reduce Active (validated all %ld devices)\n", num_ranks);
+            } else {
+                printf("ExLlamaV3: P2P All-Reduce validation FAILED - falling back to host memory\n");
+                p2p_active = false;
+            }
         }
         else
         {
-            // P2P not available or not configured for this rank
-             printf("ExLlamaV3: P2P All-Reduce Not available\n");
+            printf("ExLlamaV3: P2P All-Reduce Not available for device %d\n", this_device);
         }
         p2p_checked = true;
     }
 
-    // Heuristic for direct reduce (Host only)
+    // Get P2P buffer size from context.cu
+    size_t p2p_buffer_size = 17 * 128 * 1024; // Match SHBUF_SIZE_R from model_tp_backend.py
     bool can_use_small_direct = (data_size <= 512 * 1024);
-    
     uint32_t* abort_flag_ptr = (uint32_t*) abort_flag.data_ptr();
 
-    if (p2p_active && data_size <= shbuf_size)
+    // Use P2P kernel if available and data fits
+    if (p2p_active && data_size <= p2p_buffer_size)
     {
          int threads = MAX_NUM_THREADS;
          if (data_size < threads * 16) threads = CEIL_DIVIDE(data_size, 16);
@@ -508,13 +503,13 @@ void pg_all_reduce
             dim3(1),
             dim3(threads),
             kernelArgs,
-            sizeof(uint8_t*) * MAX_DEVICES, // Shared memory size
+            sizeof(uint8_t*) * MAX_DEVICES, // Shared memory for pointer array
             stream
          );
     }
     else if (can_use_small_direct && (data_size <= shbuf_size / num_ranks))
     {
-        // Host Memory Direct Reduce (Fallback)
+        // Host memory direct reduce (fallback)
         int threads = MAX_NUM_THREADS;
         if (data_size < threads * 16) threads = CEIL_DIVIDE(data_size, 16);
         threads = ((threads + 31) / 32) * 32;
@@ -544,6 +539,7 @@ void pg_all_reduce
     }
     else
     {
+        // Ring all-reduce for large tensors
         int threads = (int) CEIL_DIVIDE(CEIL_DIVIDE(data_size / 16ll, num_ranks), 32ll) * 32ll;
         threads = MIN(threads, MAX_NUM_THREADS);
 
@@ -576,3 +572,48 @@ void pg_all_reduce
 
     cuda_check(cudaPeekAtLastError());
 }
+
+__global__ void pg_verify_p2p_kernel
+(
+    P2PPtrs p2p_ptrs,
+    uint32_t device_mask,
+    int this_device,
+    uint32_t* result
+)
+{
+    if (threadIdx.x != 0) return;
+    
+    // Check if my pointer is valid
+    uint8_t* my_ptr = (uint8_t*)p2p_ptrs.ptrs[this_device];
+    if (!my_ptr) {
+        printf("Device %d: My P2P pointer is NULL!\n", this_device);
+        atomicOr(result, 1);
+        return;
+    }
+    
+    // Try to write and read from my buffer
+    volatile uint32_t* test_ptr = (volatile uint32_t*)my_ptr;
+    test_ptr[0] = 0x12345678 + this_device;
+    __threadfence_system();
+    
+    uint32_t readback = test_ptr[0];
+    if (readback != 0x12345678 + this_device) {
+        printf("Device %d: Write-read test FAILED (wrote 0x%x, read 0x%x)\n", 
+               this_device, 0x12345678 + this_device, readback);
+        atomicOr(result, 2);
+        return;
+    }
+    
+    // Check peer pointers
+    for (int dev = 0; dev < MAX_DEVICES; ++dev) {
+        if (!((device_mask >> dev) & 1)) continue;
+        if (dev == this_device) continue;
+        
+        uint8_t* peer_ptr = (uint8_t*)p2p_ptrs.ptrs[dev];
+        if (!peer_ptr) {
+            printf("Device %d: Peer %d pointer is NULL!\n", this_device, dev);
+            atomicOr(result, 4);
+        }
+    }
+}
+
