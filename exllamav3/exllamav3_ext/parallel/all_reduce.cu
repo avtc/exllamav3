@@ -252,6 +252,7 @@ void pg_all_reduce_kernel
 }
 
 struct P2PPtrs { void* ptrs[MAX_DEVICES]; };
+struct P2PBarrierPtrs { void* barriers[MAX_DEVICES]; };
 
 __global__ __launch_bounds__(MAX_NUM_THREADS)
 void pg_all_reduce_p2p_kernel
@@ -353,7 +354,7 @@ void pg_all_reduce_p2p_kernel_v2
     int this_device,
     uint8_t* __restrict__ data_ptr,
     const size_t data_size,
-    P2PBarrier** __restrict__ barrier_ptrs,  // Array of barrier pointers (one per GPU)
+    P2PBarrierPtrs barrier_ptrs,  // Struct containing array of barrier pointers
     P2PPtrs p2p_ptrs
 )
 {
@@ -365,17 +366,35 @@ void pg_all_reduce_p2p_kernel_v2
     extern __shared__ uint8_t smem[];
     uint8_t** p2p_ptrs_s = (uint8_t**)smem;
 
-    if (t < MAX_DEVICES)
+    // Only first num_ranks threads load pointers (more efficient)
+    if (t < num_ranks)
     {
-        if ((device_mask >> t) & 1)
-            p2p_ptrs_s[t] = (uint8_t*)p2p_ptrs.ptrs[t];
-        else
-            p2p_ptrs_s[t] = nullptr;
+        // Find the actual device index for this thread
+        int dev_idx = 0;
+        for (int bit = 0; bit < MAX_DEVICES; ++bit)
+        {
+            if ((device_mask >> bit) & 1)
+            {
+                if (dev_idx == t)
+                {
+                    p2p_ptrs_s[t] = (uint8_t*)p2p_ptrs.ptrs[bit];
+                    break;
+                }
+                dev_idx++;
+            }
+        }
     }
     __syncthreads();
 
+    // Get this device's rank within the active group
+    int this_rank = 0;
+    for (int bit = 0; bit < this_device; ++bit)
+    {
+        if ((device_mask >> bit) & 1) this_rank++;
+    }
+
     // Validate our P2P pointer
-    uint8_t* my_p2p_ptr = p2p_ptrs_s[this_device];
+    uint8_t* my_p2p_ptr = p2p_ptrs_s[this_rank];
     if (!my_p2p_ptr)
     {
         if (t == 0) {
@@ -395,25 +414,41 @@ void pg_all_reduce_p2p_kernel_v2
     __syncthreads();
 
     // Phase 2: vLLM-style P2P barrier - wait for all GPUs (GPU-only, no CPU polling)
-    p2p_barrier_vllm_style(barrier_ptrs, this_device, num_ranks, true);
+    // Convert struct to array for barrier function (only copy active devices)
+    P2PBarrier* barrier_ptr_array[MAX_DEVICES];
+    for (int i = 0; i < num_ranks; ++i) {
+        // Find the i-th active device
+        int rank = 0;
+        for (int bit = 0; bit < MAX_DEVICES; ++bit) {
+            if ((device_mask >> bit) & 1) {
+                if (rank == i) {
+                    barrier_ptr_array[i] = (P2PBarrier*)barrier_ptrs.barriers[bit];
+                    break;
+                }
+                rank++;
+            }
+        }
+    }
+    p2p_barrier_vllm_style(barrier_ptr_array, this_rank, num_ranks, true);
 
     // Phase 3: Reduce - read from all P2P buffers and accumulate
     for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
     {
         float4 sum = {0.0f, 0.0f, 0.0f, 0.0f};
 
-        // Accumulate from all active devices
-        for (int dev = 0; dev < MAX_DEVICES; ++dev)
+        // Accumulate from all active devices (only num_ranks iterations)
+        for (int i = 0; i < num_ranks; ++i)
         {
-            if (!p2p_ptrs_s[dev]) continue;
+            uint8_t* remote_ptr = p2p_ptrs_s[i];
+            if (!remote_ptr) continue;
 
             // Use volatile pointer for system-wide visibility
-            volatile float4* remote_ptr = (volatile float4*)(p2p_ptrs_s[dev] + offset);
+            volatile float4* val_ptr = (volatile float4*)(remote_ptr + offset);
             float4 val;
-            val.x = remote_ptr->x;
-            val.y = remote_ptr->y;
-            val.z = remote_ptr->z;
-            val.w = remote_ptr->w;
+            val.x = val_ptr->x;
+            val.y = val_ptr->y;
+            val.z = val_ptr->z;
+            val.w = val_ptr->w;
 
             sum.x += val.x;
             sum.y += val.y;
@@ -718,15 +753,17 @@ void pg_all_reduce_p2p_v2
 
     if (num_ranks <= 1) return;
 
-    // Build array of barrier pointers (one per device)
-    P2PBarrier* barrier_ptrs[MAX_DEVICES];
+    // Build struct of barrier pointers (one per device)
+    P2PBarrierPtrs barrier_ptrs;
     bool all_barriers_valid = true;
+    int barrier_count = 0;
     for (int i = 0; i < MAX_DEVICES; ++i)
     {
-        barrier_ptrs[i] = (P2PBarrier*)pg_get_p2p_barrier_ptr(i);
+        barrier_ptrs.barriers[i] = pg_get_p2p_barrier_ptr(i);
         if ((device_mask >> i) & 1)
         {
-            if (!barrier_ptrs[i])
+            barrier_count++;
+            if (!barrier_ptrs.barriers[i])
             {
                 all_barriers_valid = false;
                 printf("ExLlamaV3: [Device %d] P2P v2: Missing barrier for device %d\n", this_device, i);
@@ -740,7 +777,7 @@ void pg_all_reduce_p2p_v2
         return;
     }
 
-    // Collect P2P pointers
+    // Collect P2P pointers (only for active devices)
     P2PPtrs p2p_ptrs;
     bool all_valid = true;
     for (int i = 0; i < MAX_DEVICES; ++i)
