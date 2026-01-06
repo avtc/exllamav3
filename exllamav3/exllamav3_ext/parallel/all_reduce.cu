@@ -12,6 +12,7 @@ namespace cg = cooperative_groups;
 #include "ll.cuh"
 #include "barrier_inner.cuh"
 #include "p2p_barrier.cuh"
+#include "vectorization.cuh"  // Vectorized memory access
 
 #define MAX_NUM_THREADS 1024
 #define BATCH_STAGE 2
@@ -431,32 +432,29 @@ void pg_all_reduce_p2p_kernel_v2
     }
     p2p_barrier_vllm_style(barrier_ptr_array, this_rank, num_ranks, true);
 
-    // Phase 3: Reduce - read from all P2P buffers and accumulate
+    // Phase 3: Reduce - read from all P2P buffers and accumulate using vectorized loads
+    // Single 128-bit load from each GPU (compiler generates ld.f32.v4)
     for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
     {
-        float4 sum = {0.0f, 0.0f, 0.0f, 0.0f};
+        // Index in terms of float4 elements (16 bytes each)
+        size_t vec_idx = offset / 16;
 
-        // Accumulate from all active devices (only num_ranks iterations)
-        for (int i = 0; i < num_ranks; ++i)
+        // Load from first GPU
+        const float4* ptr0 = (const float4*)p2p_ptrs_s[0];
+        float4 sum = ptr0[vec_idx];
+
+        // Accumulate from remaining GPUs (vectorized loads)
+        for (int i = 1; i < num_ranks; ++i)
         {
-            uint8_t* remote_ptr = p2p_ptrs_s[i];
-            if (!remote_ptr) continue;
-
-            // Use volatile pointer for system-wide visibility
-            volatile float4* val_ptr = (volatile float4*)(remote_ptr + offset);
-            float4 val;
-            val.x = val_ptr->x;
-            val.y = val_ptr->y;
-            val.z = val_ptr->z;
-            val.w = val_ptr->w;
-
+            const float4* ptr = (const float4*)p2p_ptrs_s[i];
+            float4 val = ptr[vec_idx];
             sum.x += val.x;
             sum.y += val.y;
             sum.z += val.z;
             sum.w += val.w;
         }
 
-        // Write result back to local data
+        // Write result back to local data (128-bit store)
         *((float4*)(data_ptr + offset)) = sum;
     }
 
