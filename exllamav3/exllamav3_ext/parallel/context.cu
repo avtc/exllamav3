@@ -151,18 +151,18 @@ void pg_mem_free(uintptr_t ptr)
 // vLLM-style P2P barrier implementation
 static P2PBarrier* g_p2p_barrier = nullptr;
 
-void* pg_p2p_barrier_create()
+uintptr_t pg_p2p_barrier_create()
 {
     if (g_p2p_barrier != nullptr) {
         printf("ExLlamaV3: P2P barrier already created\n");
-        return (void*)g_p2p_barrier;
+        return (uintptr_t)g_p2p_barrier;
     }
 
     P2PBarrier* barrier = nullptr;
     cudaError_t err = cudaMalloc(&barrier, sizeof(P2PBarrier));
     if (err != cudaSuccess) {
         printf("ExLlamaV3: Failed to allocate P2P barrier: %s\n", cudaGetErrorString(err));
-        return 0;  // Return 0 on error (nullptr as uintptr_t)
+        return 0;  // Return 0 on error
     }
 
     err = cudaMemset(barrier, 0, sizeof(P2PBarrier));
@@ -174,7 +174,7 @@ void* pg_p2p_barrier_create()
 
     g_p2p_barrier = barrier;
     printf("ExLlamaV3: Created P2P barrier at %p\n", barrier);
-    return (void*)(uintptr_t)barrier;  // Return as integer for Python
+    return (uintptr_t)barrier;  // Return pointer as integer
 }
 
 void pg_p2p_barrier_init(uintptr_t ctx, uintptr_t barrier_ptr)

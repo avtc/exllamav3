@@ -65,4 +65,4 @@ struct P2PBarrier
 
 // P2P barrier functions (pure GPU, no CPU polling)
 void pg_p2p_barrier_init(uintptr_t ctx, uintptr_t barrier_ptr);
-void* pg_p2p_barrier_create();
+uintptr_t pg_p2p_barrier_create();
