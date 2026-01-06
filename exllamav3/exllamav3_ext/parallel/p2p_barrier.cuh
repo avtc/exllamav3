@@ -61,14 +61,14 @@ uint32_t p2p_barrier_read_end(volatile uint32_t* addr)
 /**
  * vLLM-style P2P barrier - pure GPU synchronization
  *
- * @param barrier Pointer to P2PBarrier structure in P2P-visible memory
+ * @param barrier_ptrs Array of P2PBarrier pointers (one per GPU)
  * @param rank This device's rank
  * @param world_size Total number of devices
  * @param start_barrier True if this is the start barrier, false if end barrier
  */
 __device__ __forceinline__
 void p2p_barrier_vllm_style(
-    P2PBarrier* barrier,
+    P2PBarrier** barrier_ptrs,
     int rank,
     int world_size,
     bool start_barrier = true
@@ -77,30 +77,37 @@ void p2p_barrier_vllm_style(
     int tid = threadIdx.x;
     int block_idx = blockIdx.x;
 
-    // Get the next flag value for this block
-    uint32_t flag = barrier->flag[block_idx] + 1;
+    // Get local barrier for flag counter
+    P2PBarrier* local_barrier = barrier_ptrs[rank];
+    uint32_t flag = local_barrier->flag[block_idx] + 1;
 
     // Only first N threads participate (where N = world_size)
     if (tid < world_size) {
         if (start_barrier) {
             // START barrier: use start array
-            // Write our flag to all peers
-            p2p_barrier_write_start(&barrier->start[rank][tid], flag);
-
-            // Wait for all peers to write to our slot
+            // Write our flag to ALL peer barriers (via P2P)
             for (int peer = 0; peer < world_size; peer++) {
-                while (p2p_barrier_read_start(&barrier->start[tid][peer]) != flag) {
+                P2PBarrier* peer_barrier = barrier_ptrs[peer];
+                p2p_barrier_write_start(&peer_barrier->start[rank][tid], flag);
+            }
+
+            // Wait for all peers to write to our local barrier
+            for (int peer = 0; peer < world_size; peer++) {
+                while (p2p_barrier_read_start(&local_barrier->start[tid][peer]) != flag) {
                     // Spin wait
                 }
             }
         } else {
             // END barrier: use end array
-            // Write our flag to all peers
-            p2p_barrier_write_end(&barrier->end[rank][tid], flag);
-
-            // Wait for all peers to write to our slot
+            // Write our flag to ALL peer barriers (via P2P)
             for (int peer = 0; peer < world_size; peer++) {
-                while (p2p_barrier_read_end(&barrier->end[tid][peer]) != flag) {
+                P2PBarrier* peer_barrier = barrier_ptrs[peer];
+                p2p_barrier_write_end(&peer_barrier->end[rank][tid], flag);
+            }
+
+            // Wait for all peers to write to our local barrier
+            for (int peer = 0; peer < world_size; peer++) {
+                while (p2p_barrier_read_end(&local_barrier->end[tid][peer]) != flag) {
                     // Spin wait
                 }
             }
@@ -112,7 +119,7 @@ void p2p_barrier_vllm_style(
 
     // Update flag for next barrier (only thread 0)
     if (tid == 0) {
-        barrier->flag[block_idx] = flag;
+        local_barrier->flag[block_idx] = flag;
     }
 }
 
@@ -120,7 +127,7 @@ void p2p_barrier_vllm_style(
  * Simplified version - single barrier (no start/end distinction)
  */
 __device__ __forceinline__
-void p2p_barrier_simple(P2PBarrier* barrier, int rank, int world_size)
+void p2p_barrier_simple(P2PBarrier** barrier_ptrs, int rank, int world_size)
 {
-    p2p_barrier_vllm_style(barrier, rank, world_size, true);
+    p2p_barrier_vllm_style(barrier_ptrs, rank, world_size, true);
 }

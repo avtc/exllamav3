@@ -32,6 +32,7 @@ struct alignas(64) PGContext
     alignas(16) uint32_t gather_stage_produced[MAX_DEVICES];
     alignas(16) uint32_t gather_stage_consumed[MAX_DEVICES];
     alignas(16) uint8_t p2p_handles[MAX_DEVICES][64]; // CUDA IPC handles (fixed 64 bytes)
+    alignas(16) uint8_t p2p_barrier_handles[MAX_DEVICES][64]; // P2P barrier IPC handles
 
     // Maintain flags in separate 64-byte regions/cache lines
     alignas(64) uint32_t reduce_jobs_head; char _pad1[64 - sizeof(uint32_t)];
@@ -47,9 +48,12 @@ void pg_check_timeout(uintptr_t ctx);
 
 // P2P memory management
 void pg_set_p2p_handle(uintptr_t ctx, int device, const char* handle_bytes);
+void pg_set_p2p_barrier_handle(uintptr_t ctx, int device, const char* handle_bytes);
 void pg_get_ipc_handle(uintptr_t ptr, char* handle_out);
 void pg_open_p2p_handles(uintptr_t ctx, int my_device, uintptr_t my_ptr);
+void pg_open_p2p_barrier_handles(uintptr_t ctx, int my_device, uintptr_t my_barrier_ptr);
 void* pg_get_p2p_ptr(int device);
+void* pg_get_p2p_barrier_ptr(int device);
 
 // P2P buffer allocation
 uintptr_t pg_mem_alloc(size_t size);

@@ -47,6 +47,5 @@ void pg_all_reduce_p2p_v2
     std::vector<uintptr_t> devices,
     int this_device,
     int master_device,
-    at::Tensor& tensor,
-    uintptr_t p2p_barrier
+    at::Tensor& tensor
 );

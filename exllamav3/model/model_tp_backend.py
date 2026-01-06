@@ -385,7 +385,7 @@ class TPBackendNative:
         self.ptr_p2p = 0
         self.p2p_buffer_size = 0
         self.ptr_p2p_barrier = 0  # vLLM-style P2P barrier structure
-        
+
         if OptimizationFlags.ENABLE_P2P_TRANSFER and self.device >= 0:
             # Use same size as CPU reduce buffer
             self.p2p_buffer_size = size_r
@@ -397,6 +397,13 @@ class TPBackendNative:
                     log_tp(device, f"P2P buffer allocation returned NULL - disabling P2P")
                 else:
                     log_tp(device, f"P2P buffer allocated successfully at 0x{self.ptr_p2p:x}")
+
+                    # Allocate P2P barrier structure (for GPU-only synchronization)
+                    self.ptr_p2p_barrier = ext.pg_p2p_barrier_create()
+                    if self.ptr_p2p_barrier == 0:
+                        log_tp(device, f"P2P barrier allocation failed - will use CPU barriers")
+                    else:
+                        log_tp(device, f"P2P barrier allocated at 0x{self.ptr_p2p_barrier:x}")
             except Exception as e:
                 log_tp(device, f"P2P buffer allocation exception: {e}")
                 self.ptr_p2p = 0
@@ -454,23 +461,30 @@ class TPBackendNative:
         """Register P2P IPC handle for this device's buffer"""
         if not OptimizationFlags.ENABLE_P2P_TRANSFER:
             return
-            
+
         if self.device < 0:
             return
-            
+
         if self.ptr_p2p == 0:
             log_tp(self.device, f"No P2P buffer to register")
             return
-            
+
         log_tp(self.device, f"Registering P2P IPC handle (ptr=0x{self.ptr_p2p:x}, size={self.p2p_buffer_size})")
-        
+
         try:
+            # Register P2P buffer handle
             handle_bytes = ext.pg_get_ipc_handle(self.ptr_p2p)
             log_tp(self.device, f"Got IPC handle ({len(handle_bytes)} bytes)")
-            
+
             ext.pg_set_p2p_handle(self.ptr_g, self.device, handle_bytes)
             log_tp(self.device, f"P2P IPC handle registered successfully")
-            
+
+            # Register P2P barrier handle (if barrier exists)
+            if self.ptr_p2p_barrier != 0:
+                barrier_handle_bytes = ext.pg_get_ipc_handle(self.ptr_p2p_barrier)
+                ext.pg_set_p2p_barrier_handle(self.ptr_g, self.device, barrier_handle_bytes)
+                log_tp(self.device, f"P2P barrier IPC handle registered successfully")
+
         except Exception as e:
             log_tp(self.device, f"P2P registration failed: {e}")
             import traceback
@@ -488,12 +502,14 @@ class TPBackendNative:
         log_tp(self.device, f"Opening P2P handles from peers")
 
         try:
+            # Open P2P buffer handles
             ext.pg_open_p2p_handles(self.ptr_g, self.device, self.ptr_p2p)
-            log_tp(self.device, f"P2P handles opened successfully")
+            log_tp(self.device, f"P2P buffer handles opened successfully")
 
-            # Initialize vLLM-style P2P barrier (GPU-only synchronization)
-            self.ptr_p2p_barrier = ext.pg_p2p_barrier_create()
-            log_tp(self.device, f"P2P barrier created at 0x{self.ptr_p2p_barrier:x}")
+            # Open P2P barrier handles (if barrier exists)
+            if self.ptr_p2p_barrier != 0:
+                ext.pg_open_p2p_barrier_handles(self.ptr_g, self.device, self.ptr_p2p_barrier)
+                log_tp(self.device, f"P2P barrier handles opened successfully")
 
             # Note: P2P verification is now called after the second barrier in model_tp_fn.py
             # to ensure all devices have opened their handles before verification
@@ -576,8 +592,7 @@ class TPBackendNative:
                 self.active_devices,
                 self.device,
                 self.active_devices[0],
-                tensor,
-                self.ptr_p2p_barrier
+                tensor
             )
             return
 

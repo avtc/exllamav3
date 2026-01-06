@@ -353,7 +353,7 @@ void pg_all_reduce_p2p_kernel_v2
     int this_device,
     uint8_t* __restrict__ data_ptr,
     const size_t data_size,
-    P2PBarrier* __restrict__ barrier,  // vLLM-style barrier
+    P2PBarrier** __restrict__ barrier_ptrs,  // Array of barrier pointers (one per GPU)
     P2PPtrs p2p_ptrs
 )
 {
@@ -395,7 +395,7 @@ void pg_all_reduce_p2p_kernel_v2
     __syncthreads();
 
     // Phase 2: vLLM-style P2P barrier - wait for all GPUs (GPU-only, no CPU polling)
-    p2p_barrier_vllm_style(barrier, this_device, num_ranks, true);
+    p2p_barrier_vllm_style(barrier_ptrs, this_device, num_ranks, true);
 
     // Phase 3: Reduce - read from all P2P buffers and accumulate
     for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
@@ -701,8 +701,7 @@ void pg_all_reduce_p2p_v2
     std::vector<uintptr_t> devices,
     int this_device,
     int master_device,
-    at::Tensor& tensor,
-    uintptr_t p2p_barrier  // P2PBarrier pointer
+    at::Tensor& tensor
 )
 {
     const at::cuda::OptionalCUDAGuard device_guard(this_device);
@@ -719,10 +718,25 @@ void pg_all_reduce_p2p_v2
 
     if (num_ranks <= 1) return;
 
-    // Validate P2P barrier pointer
-    if (p2p_barrier == 0)
+    // Build array of barrier pointers (one per device)
+    P2PBarrier* barrier_ptrs[MAX_DEVICES];
+    bool all_barriers_valid = true;
+    for (int i = 0; i < MAX_DEVICES; ++i)
     {
-        printf("ExLlamaV3: [Device %d] P2P v2: Barrier pointer is NULL, falling back\n", this_device);
+        barrier_ptrs[i] = (P2PBarrier*)pg_get_p2p_barrier_ptr(i);
+        if ((device_mask >> i) & 1)
+        {
+            if (!barrier_ptrs[i])
+            {
+                all_barriers_valid = false;
+                printf("ExLlamaV3: [Device %d] P2P v2: Missing barrier for device %d\n", this_device, i);
+            }
+        }
+    }
+
+    if (!all_barriers_valid)
+    {
+        printf("ExLlamaV3: [Device %d] P2P v2: Not all barrier pointers available, falling back\n", this_device);
         return;
     }
 
@@ -765,7 +779,7 @@ void pg_all_reduce_p2p_v2
         (void*)& this_device,
         (void*)& data_ptr,
         (void*)& data_size,
-        (void*)& p2p_barrier,
+        (void*)& barrier_ptrs,  // Array of barrier pointers
         (void*)& p2p_ptrs
     };
 

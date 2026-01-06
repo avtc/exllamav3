@@ -75,7 +75,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         if (h_str.size() != 64) throw std::runtime_error("Handle must be 64 bytes");
         pg_set_p2p_handle(ctx, device, h_str.data());
     }, "pg_set_p2p_handle");
-    
+
+    m.def("pg_set_p2p_barrier_handle", [](uintptr_t ctx, int device, py::bytes handle) {
+        std::string h_str = handle;
+        if (h_str.size() != 64) throw std::runtime_error("Handle must be 64 bytes");
+        pg_set_p2p_barrier_handle(ctx, device, h_str.data());
+    }, "pg_set_p2p_barrier_handle");
+
     m.def("pg_get_ipc_handle", [](uintptr_t ptr) {
         char handle[64];
         pg_get_ipc_handle(ptr, handle);
@@ -83,6 +89,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     }, "pg_get_ipc_handle");
 
     m.def("pg_open_p2p_handles", &pg_open_p2p_handles, "pg_open_p2p_handles");
+    m.def("pg_open_p2p_barrier_handles", &pg_open_p2p_barrier_handles, "pg_open_p2p_barrier_handles");
     m.def("pg_mem_alloc", &pg_mem_alloc, "pg_mem_alloc");
     m.def("pg_mem_free", &pg_mem_free, "pg_mem_free");
     m.def("pg_p2p_barrier_create", &pg_p2p_barrier_create, "pg_p2p_barrier_create");

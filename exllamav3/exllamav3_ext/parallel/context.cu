@@ -27,6 +27,7 @@ void pg_init_context(uintptr_t ctx)
         ctx_ptr->gather_stage_consumed[i] = 0;
         ctx_ptr->cpusum_stage_device[i * REDUCE_STAGE_STRIDE] = 0;
         memset(ctx_ptr->p2p_handles[i], 0, 64);
+        memset(ctx_ptr->p2p_barrier_handles[i], 0, 64);
     }
 
     ctx_ptr->reduce_jobs_head = 0;
@@ -47,12 +48,25 @@ void pg_check_timeout(uintptr_t ctx)
 static void* g_p2p_ptrs[MAX_DEVICES] = {0};
 static bool g_p2p_opened[MAX_DEVICES] = {0};
 
+// Local cache of opened P2P barrier pointers (process-local)
+static void* g_p2p_barrier_ptrs[MAX_DEVICES] = {0};
+static bool g_p2p_barrier_opened[MAX_DEVICES] = {0};
+
 void pg_set_p2p_handle(uintptr_t ctx, int device, const char* handle_bytes)
 {
     PGContext* ctx_ptr = (PGContext*) ctx;
     if (device >= 0 && device < MAX_DEVICES)
     {
         memcpy(ctx_ptr->p2p_handles[device], handle_bytes, 64);
+    }
+}
+
+void pg_set_p2p_barrier_handle(uintptr_t ctx, int device, const char* handle_bytes)
+{
+    PGContext* ctx_ptr = (PGContext*) ctx;
+    if (device >= 0 && device < MAX_DEVICES)
+    {
+        memcpy(ctx_ptr->p2p_barrier_handles[device], handle_bytes, 64);
     }
 }
 
@@ -118,6 +132,62 @@ void* pg_get_p2p_ptr(int device)
     return nullptr;
 }
 
+void pg_open_p2p_barrier_handles(uintptr_t ctx, int my_device, uintptr_t my_barrier_ptr)
+{
+    PGContext* ctx_ptr = (PGContext*) ctx;
+
+    // Store local pointer
+    g_p2p_barrier_ptrs[my_device] = (void*)my_barrier_ptr;
+    g_p2p_barrier_opened[my_device] = true;
+
+    // Iterate all potential peer devices
+    for (int i = 0; i < MAX_DEVICES; ++i)
+    {
+        if (g_p2p_barrier_opened[i]) continue; // Already opened
+
+        if (i == my_device)
+        {
+            // Already handled above
+            continue;
+        }
+
+        // Check if handle is set (check if all zeros)
+        bool is_zero = true;
+        for(int j=0; j<64; ++j) {
+            if (ctx_ptr->p2p_barrier_handles[i][j] != 0) {
+                is_zero = false;
+                break;
+            }
+        }
+
+        if (!is_zero)
+        {
+            cudaIpcMemHandle_t handle;
+            memcpy(&handle, ctx_ptr->p2p_barrier_handles[i], 64);
+            void* ptr = nullptr;
+            cudaError_t err = cudaIpcOpenMemHandle(&ptr, handle, cudaIpcMemLazyEnablePeerAccess);
+            if (err == cudaSuccess)
+            {
+                g_p2p_barrier_ptrs[i] = ptr;
+                g_p2p_barrier_opened[i] = true;
+                printf("ExLlamaV3: Device %d - opened P2P barrier handle for peer %d: %p\n",
+                       my_device, i, ptr);
+            }
+            else
+            {
+                printf("ExLlamaV3: WARNING: Device %d - cudaIpcOpenMemHandle failed for peer %d barrier (error %d: %s)\n",
+                       my_device, i, (int)err, cudaGetErrorString(err));
+            }
+        }
+    }
+}
+
+void* pg_get_p2p_barrier_ptr(int device)
+{
+    if (device >= 0 && device < MAX_DEVICES) return g_p2p_barrier_ptrs[device];
+    return nullptr;
+}
+
 // Allocate P2P VRAM buffer
 uintptr_t pg_mem_alloc(size_t size)
 {
@@ -150,31 +220,32 @@ void pg_mem_free(uintptr_t ptr)
 
 // vLLM-style P2P barrier implementation
 static P2PBarrier* g_p2p_barrier = nullptr;
+static void* g_p2p_barrier_ipc_handle = nullptr;  // IPC handle for barrier
+static bool g_p2p_barrier_ipc_registered = false;
 
 uintptr_t pg_p2p_barrier_create()
 {
-    if (g_p2p_barrier != nullptr) {
-        printf("ExLlamaV3: P2P barrier already created\n");
-        return (uintptr_t)g_p2p_barrier;
-    }
+    // Each GPU allocates its own barrier structure
+    // The barriers will be shared via IPC handles so all GPUs can access each other's
 
     P2PBarrier* barrier = nullptr;
     cudaError_t err = cudaMalloc(&barrier, sizeof(P2PBarrier));
     if (err != cudaSuccess) {
         printf("ExLlamaV3: Failed to allocate P2P barrier: %s\n", cudaGetErrorString(err));
-        return 0;  // Return 0 on error
+        return 0;
     }
 
     err = cudaMemset(barrier, 0, sizeof(P2PBarrier));
     if (err != cudaSuccess) {
         printf("ExLlamaV3: Failed to initialize P2P barrier: %s\n", cudaGetErrorString(err));
         cudaFree(barrier);
-        return 0;  // Return 0 on error
+        return 0;
     }
 
-    g_p2p_barrier = barrier;
-    printf("ExLlamaV3: Created P2P barrier at %p\n", barrier);
-    return (uintptr_t)barrier;  // Return pointer as integer
+    printf("ExLlamaV3: Allocated P2P barrier at %p (size=%zu)\n",
+           barrier, sizeof(P2PBarrier));
+
+    return (uintptr_t)barrier;
 }
 
 void pg_p2p_barrier_init(uintptr_t ctx, uintptr_t barrier_ptr)
