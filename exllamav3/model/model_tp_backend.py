@@ -503,6 +503,10 @@ class TPBackendNative:
     def fwd_barrier(self):
         ext.pg_barrier(self.ptr_g, self.active_devices, self.device, self.abort_flag)
 
+    def sync_barrier(self):
+        """Synchronous barrier - waits for all devices to arrive"""
+        ext.pg_barrier_sync(self.ptr_g, self.active_devices, self.device, self.abort_flag)
+
 
     def broadcast(self, tensor: torch.Tensor, src_device: int):
         if tensor.numel() * tensor.element_size() <= 2048:

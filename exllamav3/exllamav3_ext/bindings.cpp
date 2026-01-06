@@ -90,6 +90,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("pg_broadcast", &pg_broadcast, "pg_broadcast");
     m.def("pg_broadcast_ll", &pg_broadcast_ll, "pg_broadcast_ll");
     m.def("pg_barrier", &pg_barrier, "pg_barrier");
+    m.def("pg_barrier_sync", &pg_barrier_sync, "pg_barrier_sync");
     m.def("pg_gather", &pg_gather, "pg_gather");
     m.def("pg_all_reduce", &pg_all_reduce, "pg_all_reduce");
     m.def("pg_all_reduce_cpu", &pg_all_reduce_cpu, "pg_all_reduce_cpu");

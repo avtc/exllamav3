@@ -46,3 +46,22 @@ void pg_barrier
     );
     cuda_check(cudaPeekAtLastError());
 }
+
+// Synchronous barrier for P2P initialization - waits for all devices
+void pg_barrier_sync
+(
+    uintptr_t ctx,
+    std::vector<uintptr_t> devices,
+    int this_device,
+    at::Tensor& abort_flag
+)
+{
+    const at::cuda::OptionalCUDAGuard device_guard(this_device);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+
+    // Reuse async barrier
+    pg_barrier(ctx, devices, this_device, abort_flag);
+
+    // Then wait for completion
+    cudaStreamSynchronize(stream);
+}
