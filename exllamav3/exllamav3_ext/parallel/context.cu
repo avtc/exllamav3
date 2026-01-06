@@ -215,28 +215,62 @@ void pg_verify_p2p(uintptr_t ctx, std::vector<uintptr_t> devices, int this_devic
     
     // Copy to device
     void** p2p_ptrs_dev;
-    cudaMalloc(&p2p_ptrs_dev, MAX_DEVICES * sizeof(void*));
-    cudaMemcpy(p2p_ptrs_dev, p2p_ptrs_host, MAX_DEVICES * sizeof(void*), cudaMemcpyHostToDevice);
-    
+    cudaError_t err = cudaMalloc(&p2p_ptrs_dev, MAX_DEVICES * sizeof(void*));
+    if (err != cudaSuccess) {
+        printf("ExLlamaV3: P2P verify cudaMalloc failed for p2p_ptrs_dev: %s\n",
+               cudaGetErrorString(err));
+        return;
+    }
+    err = cudaMemcpy(p2p_ptrs_dev, p2p_ptrs_host, MAX_DEVICES * sizeof(void*), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        printf("ExLlamaV3: P2P verify cudaMemcpy failed: %s\n", cudaGetErrorString(err));
+        cudaFree(p2p_ptrs_dev);
+        return;
+    }
+
     uint32_t device_mask = 0;
     for (int i : devices) device_mask |= (1 << i);
-    
-    // Create result tensor
-    auto result = torch::zeros({1}, torch::dtype(torch::kInt32).device(this_device));
-    uint32_t* result_ptr = result.data_ptr<uint32_t>();
-    
+
+    // Allocate result buffer on device
+    uint32_t* result_dev;
+    err = cudaMalloc(&result_dev, sizeof(uint32_t));
+    if (err != cudaSuccess) {
+        printf("ExLlamaV3: P2P verify cudaMalloc failed for result_dev: %s\n",
+               cudaGetErrorString(err));
+        cudaFree(p2p_ptrs_dev);
+        return;
+    }
+    err = cudaMemset(result_dev, 0, sizeof(uint32_t));
+    if (err != cudaSuccess) {
+        printf("ExLlamaV3: P2P verify cudaMemset failed: %s\n", cudaGetErrorString(err));
+        cudaFree(result_dev);
+        cudaFree(p2p_ptrs_dev);
+        return;
+    }
+
     pg_verify_p2p_kernel_impl<<<1, 32, 0, stream>>>(
-        p2p_ptrs_dev, device_mask, this_device, result_ptr
+        p2p_ptrs_dev, device_mask, this_device, result_dev
     );
-    
-    cudaStreamSynchronize(stream);
-    
-    uint32_t status = result.item<uint32_t>();
-    if (status == 0) {
+
+    err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+        printf("ExLlamaV3: P2P verify cudaStreamSynchronize failed: %s\n",
+               cudaGetErrorString(err));
+        cudaFree(result_dev);
+        cudaFree(p2p_ptrs_dev);
+        return;
+    }
+
+    uint32_t status;
+    err = cudaMemcpy(&status, result_dev, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        printf("ExLlamaV3: P2P verify cudaMemcpy failed: %s\n", cudaGetErrorString(err));
+    } else if (status == 0) {
         printf("Device %d: P2P verification PASSED ✓\n", this_device);
     } else {
         printf("Device %d: P2P verification FAILED ✗ (status=0x%x)\n", this_device, status);
     }
-    
+
+    cudaFree(result_dev);
     cudaFree(p2p_ptrs_dev);
 }
