@@ -85,6 +85,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("pg_open_p2p_handles", &pg_open_p2p_handles, "pg_open_p2p_handles");
     m.def("pg_mem_alloc", &pg_mem_alloc, "pg_mem_alloc");
     m.def("pg_mem_free", &pg_mem_free, "pg_mem_free");
+    m.def("pg_verify_p2p", &pg_verify_p2p, "pg_verify_p2p");
 
     m.def("pg_broadcast", &pg_broadcast, "pg_broadcast");
     m.def("pg_broadcast_ll", &pg_broadcast_ll, "pg_broadcast_ll");
