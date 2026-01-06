@@ -46,10 +46,18 @@ __device__ __forceinline__ float upcast_s(__nv_bfloat16 val) { return __bfloat16
 #endif
 
 // Scalar downcast functions (float -> T)
-__device__ __forceinline__ float downcast_s(float val) { return val; }
-__device__ __forceinline__ half downcast_s(half) { return __float2half(val); }
+template <typename T>
+__device__ __forceinline__ T downcast_s(float val);
+
+template <>
+__device__ __forceinline__ float downcast_s<float>(float val) { return val; }
+
+template <>
+__device__ __forceinline__ half downcast_s<half>(float val) { return __float2half(val); }
+
 #if defined(__CUDA_BF16__)
-__device__ __forceinline__ __nv_bfloat16 downcast_s(__nv_bfloat16) { return __float2bfloat16(val); }
+template <>
+__device__ __forceinline__ __nv_bfloat16 downcast_s<__nv_bfloat16>(float val) { return __float2bfloat16(val); }
 #endif
 
 // Vector upcast: Convert packed type to float accumulator
