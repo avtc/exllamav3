@@ -1,5 +1,6 @@
 import torch
 import traceback
+import os
 from .model_tp_shared import SMProducer, SMConsumer
 from ..ext import exllamav3_ext as ext
 from functools import lru_cache
@@ -44,15 +45,25 @@ def init_pg(device: int, active_devices: list[int], output_device: int, backend_
                 uuid = backend_args["uuid"],
                 cpu = device < 0
             )
+            # Step 1: Register P2P handles (export to shared memory)
             backend.register_p2p()
             log_tp(device, "P2P handles registered, waiting for all devices...")
+
+            # Step 2: Barrier - ensure all devices have registered their handles
             backend.fwd_barrier()
             log_tp(device, "All devices registered, opening P2P handles...")
+
+            # Step 3: Open P2P handles (all peer handles are now available in shared memory)
             backend.open_p2p_handles()
-            log_tp(device, "P2P handles opened, waiting for all devices to complete...")
-            # Second barrier to ensure all devices have opened all P2P handles before validation
+
+            # Step 4: Barrier - ensure all devices have opened peer handles
             backend.fwd_barrier()
-            log_tp(device, "All P2P handles opened, validation complete")
+            log_tp(device, "All P2P handles opened, initialization complete")
+
+            # Optional: Run P2P verification after all handles are opened
+            if os.getenv("EXLLAMA_P2P_VERIFY", "0") == "1":
+                log_tp(device, "Running P2P verification...")
+                ext.pg_verify_p2p(backend.ptr_g, backend.active_devices, device)
         case _:
             raise ValueError("Unknown backend type")
 

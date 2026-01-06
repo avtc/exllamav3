@@ -480,21 +480,19 @@ class TPBackendNative:
         """Open P2P IPC handles from all peer devices"""
         if not OptimizationFlags.ENABLE_P2P_TRANSFER:
             return
-            
+
         if self.device < 0:
             return
-            
+
         log_tp(self.device, f"Opening P2P handles from peers")
-        
+
         try:
             ext.pg_open_p2p_handles(self.ptr_g, self.device, self.ptr_p2p)
             log_tp(self.device, f"P2P handles opened successfully")
-            
-            # Optional: Run verification (comment out in production)
-            if os.getenv("EXLLAMA_P2P_VERIFY", "0") == "1":
-                log_tp(self.device, f"Running P2P verification")
-                ext.pg_verify_p2p(self.ptr_g, self.active_devices, self.device)
-                
+
+            # Note: P2P verification is now called after the second barrier in model_tp_fn.py
+            # to ensure all devices have opened their handles before verification
+
         except Exception as e:
             log_tp(self.device, f"P2P handle opening failed: {e}")
             import traceback
