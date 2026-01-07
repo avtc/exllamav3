@@ -61,19 +61,19 @@ class TransformerBlock(Module):
     ) -> torch.Tensor:
 
         # Set prefill mode based on params
-        is_prefill = params.get("prefill", True)
-        set_prefill_mode(is_prefill)
+        is_prefill = params.get("prefill")
+        set_prefill_mode(is_prefill == True)
 
         if self.attn:
             # Attention norm
-            with timed_operation("attn_norm", "forward"):
+            with timed_operation("attn_norm", "forward", params):
                 if self.attn_norm:
                     y = self.attn_norm.forward(x, params, out_dtype = torch.half)
                 else:
                     y = x.half()
 
             # Attention
-            with timed_operation("attn", "forward"):
+            with timed_operation("attn", "forward", params):
                 y = self.attn.forward(y, params)
 
             # Early return during prefill (after attention)
@@ -81,33 +81,33 @@ class TransformerBlock(Module):
                 return x
 
             # Attention post-norm
-            with timed_operation("attn_post_norm", "forward"):
+            with timed_operation("attn_post_norm", "forward", params):
                 if self.attn_post_norm:
                     y = self.attn_post_norm.forward(y, params)
 
             # Residual connection
-            with timed_operation("residual", "attn_add"):
+            with timed_operation("residual", "attn_add", params):
                 x += y
 
         if self.mlp:
             # MLP norm
-            with timed_operation("mlp_norm", "forward"):
+            with timed_operation("mlp_norm", "forward", params):
                 if self.mlp_norm:
                     y = self.mlp_norm.forward(x, params, out_dtype = torch.half)
                 else:
                     y = x.half()
 
             # MLP
-            with timed_operation("mlp", "forward"):
+            with timed_operation("mlp", "forward", params):
                 y = self.mlp.forward(y, params)
 
             # MLP post-norm
-            with timed_operation("mlp_post_norm", "forward"):
+            with timed_operation("mlp_post_norm", "forward", params):
                 if self.mlp_post_norm:
                     y = self.mlp_post_norm.forward(y, params)
 
             # Residual connection
-            with timed_operation("residual", "mlp_add"):
+            with timed_operation("residual", "mlp_add", params):
                 x += y
 
         return to2(x, out_dtype, self.out_dtype)
@@ -245,30 +245,30 @@ class ParallelDecoderBlock(Module):
     ) -> torch.Tensor:
 
         # Set prefill mode based on params
-        is_prefill = params.get("prefill", True)
-        set_prefill_mode(is_prefill)
+        is_prefill = params.get("prefill")
+        set_prefill_mode(is_prefill == True)
 
         # Input norm
-        with timed_operation("norm", "input_norm"):
+        with timed_operation("norm", "input_norm", params):
             y = self.input_norm.forward(x, params, out_dtype = torch.half)
 
         # Attention
-        with timed_operation("attn", "forward"):
+        with timed_operation("attn", "forward", params):
             y1 = self.attn.forward(y, params)
 
         if not is_prefill:
             # MLP
-            with timed_operation("mlp", "forward"):
+            with timed_operation("mlp", "forward", params):
                 y2 = self.mlp.forward(y, params)
                 y1 += y2
 
             # All-reduce
             if self.tp_reduce:
-                with timed_operation("all_reduce", "transformer_block"):
+                with timed_operation("all_reduce", "transformer_block", params):
                     params["backend"].all_reduce(y1)
 
             # Residual
-            with timed_operation("residual", "add"):
+            with timed_operation("residual", "add", params):
                 x += y1
 
         return to2(x, out_dtype, self.out_dtype)

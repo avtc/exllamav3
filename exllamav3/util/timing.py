@@ -90,17 +90,24 @@ def reset():
     _in_prefill = True
 
 @contextmanager
-def timed_operation(category: str, operation: str):
+def timed_operation(category: str, operation: str, params: dict = None):
     """
     Context manager for timing an operation with nanosecond precision.
 
     Usage:
-        with timed_operation("attn", "flash_attn"):
+        with timed_operation("attn", "flash_attn", params):
             result = self.decode_flash_attn_nc(x, bsz, seqln, params)
 
     Timing is only accumulated during decode stage (not prefill).
     """
-    if not _enabled or _in_prefill:
+    # Check if we should skip timing (disabled or during prefill)
+    # Use params if available, otherwise fall back to global state
+    if params is not None:
+        is_prefill = params.get("prefill") == True
+    else:
+        is_prefill = _in_prefill
+
+    if not _enabled or is_prefill:
         yield
         return
 
