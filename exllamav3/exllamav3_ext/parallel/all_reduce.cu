@@ -356,7 +356,7 @@ void pg_all_reduce_p2p_kernel_v2
     uint8_t* __restrict__ data_ptr,
     const size_t data_size,
     P2PBarrier** barrier_ptr_array,    // Pre-built compact array
-    uint8_t** p2p_ptr_array,           // Pre-built compact array
+    float4** p2p_ptr_array,            // Pre-built compact array (float4* to avoid casts)
     int num_ranks,                     // Pre-calculated
     int this_rank                      // Pre-calculated
 )
@@ -364,23 +364,28 @@ void pg_all_reduce_p2p_kernel_v2
     int t = threadIdx.x;
     if (num_ranks <= 1) return;
 
-    // Load P2P pointers into shared memory (direct copy, no nested loops!)
-    extern __shared__ uint8_t smem[];
-    float4** p2p_ptrs_s = (float4**)smem;  // Use float4** to avoid casts in reduce loop
-
-    if (t < num_ranks) {
-        p2p_ptrs_s[t] = (float4*)p2p_ptr_array[t];  // Direct assignment
+    // Trace: Log kernel parameters (only thread 0 to avoid spam)
+    if (t == 0) {
+        printf("ExLlamaV3: [Device %d kernel] device_mask=0x%x, this_rank=%d/%d, data_size=%zu\n",
+               this_device, device_mask, this_rank, num_ranks, data_size);
+        printf("ExLlamaV3: [Device %d kernel] P2P pointer array received:\n", this_device);
+        for (int i = 0; i < num_ranks; ++i) {
+            printf("  p2p_ptr_array[%d] = %p\n", i, p2p_ptr_array[i]);
+        }
     }
-    __syncthreads();
 
-    // Validate our P2P pointer
-    float4* my_p2p_ptr = p2p_ptrs_s[this_rank];
+    // Validate our P2P pointer (direct from parameter, no shared memory needed)
+    float4* my_p2p_ptr = p2p_ptr_array[this_rank];
     if (!my_p2p_ptr)
     {
         if (t == 0) {
             printf("ExLlamaV3: P2P ERROR - Device %d (rank %d) has no P2P pointer!\n", this_device, this_rank);
+            printf("ExLlamaV3: P2P ERROR - Attempted to access p2p_ptr_array[%d] which is NULL\n", this_rank);
+            printf("ExLlamaV3: P2P ERROR - This is a fatal error. Aborting kernel.\n");
         }
-        return;
+        // Explicitly fail - don't silently return
+        assert(my_p2p_ptr != nullptr && "P2P pointer is null - check P2P handle initialization");
+        return;  // Will never reach here due to assert
     }
 
     // Phase 1: Copy local data to P2P buffer
@@ -399,19 +404,19 @@ void pg_all_reduce_p2p_kernel_v2
 
     // Phase 3: Reduce - read from all P2P buffers and accumulate using vectorized loads
     // Single 128-bit load from each GPU (compiler generates ld.f32.v4)
-    // No casts needed - p2p_ptrs_s is already float4**
+    // Direct access from p2p_ptr_array parameter, no casts needed
     for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
     {
         // Index in terms of float4 elements (16 bytes each)
         size_t vec_idx = offset / 16;
 
-        // Load from first GPU (already float4*, no cast needed)
-        float4 sum = p2p_ptrs_s[0][vec_idx];
+        // Load from first GPU (direct from parameter, no cast)
+        float4 sum = p2p_ptr_array[0][vec_idx];
 
         // Accumulate from remaining GPUs (vectorized loads, no casts)
         for (int i = 1; i < num_ranks; ++i)
         {
-            float4 val = p2p_ptrs_s[i][vec_idx];
+            float4 val = p2p_ptr_array[i][vec_idx];
             sum.x += val.x;
             sum.y += val.y;
             sum.z += val.z;
@@ -720,7 +725,7 @@ void pg_all_reduce_p2p_v2
     static P2PPtrs cached_p2p_ptrs;
     static P2PBarrierPtrs cached_barrier_ptrs;
     static P2PBarrier* cached_barrier_array[MAX_DEVICES];
-    static uint8_t* cached_p2p_ptr_array[MAX_DEVICES];
+    static float4* cached_p2p_ptr_array[MAX_DEVICES];  // float4* to avoid casts in kernel
     static int cached_num_ranks = 0;
     static int cached_this_rank = 0;
     static int validation_attempts = 0;
@@ -735,6 +740,7 @@ void pg_all_reduce_p2p_v2
             cached_p2p_ptrs.ptrs[i] = pg_get_p2p_ptr(i);
             if ((device_mask >> i) & 1 && !cached_p2p_ptrs.ptrs[i]) {
                 all_valid = false;
+                printf("ExLlamaV3: [Device %d] WARNING: P2P pointer for device %d is NULL\n", this_device, i);
             }
         }
 
@@ -743,6 +749,7 @@ void pg_all_reduce_p2p_v2
             cached_barrier_ptrs.barriers[i] = pg_get_p2p_barrier_ptr(i);
             if ((device_mask >> i) & 1 && !cached_barrier_ptrs.barriers[i]) {
                 all_valid = false;
+                printf("ExLlamaV3: [Device %d] WARNING: Barrier pointer for device %d is NULL\n", this_device, i);
             }
         }
 
@@ -754,7 +761,7 @@ void pg_all_reduce_p2p_v2
             for (int bit = 0; bit < MAX_DEVICES; ++bit) {
                 if ((device_mask >> bit) & 1) {
                     cached_barrier_array[idx] = (P2PBarrier*)cached_barrier_ptrs.barriers[bit];
-                    cached_p2p_ptr_array[idx] = (uint8_t*)cached_p2p_ptrs.ptrs[bit];
+                    cached_p2p_ptr_array[idx] = (float4*)cached_p2p_ptrs.ptrs[bit];  // Cast to float4*
                     idx++;
                 }
             }
@@ -764,6 +771,12 @@ void pg_all_reduce_p2p_v2
             p2p_v2_validated = true;
             printf("ExLlamaV3: [Device %d] P2P v2: Pre-registered buffers validated (rank=%d/%d)\n",
                    this_device, cached_this_rank, cached_num_ranks);
+
+            // Trace: Log all pointers in compact array
+            printf("ExLlamaV3: [Device %d] P2P v2: Compact P2P pointer array:\n", this_device);
+            for (int i = 0; i < cached_num_ranks; ++i) {
+                printf("  [%d] = %p\n", i, cached_p2p_ptr_array[i]);
+            }
         } else {
             printf("ExLlamaV3: [Device %d] P2P v2 ERROR: Not all pointers available. EXLLAMA_TP_P2P=1 requires all P2P handles to be opened.\n", this_device);
             TORCH_CHECK(false, "P2P validation failed - EXLLAMA_TP_P2P=1 requires all P2P handles to be opened");
@@ -803,7 +816,7 @@ void pg_all_reduce_p2p_v2
         dim3(1),
         dim3(threads),
         kernelArgs,
-        sizeof(float4*) * MAX_DEVICES,  // Shared memory for float4* pointer array
+        0,  // No shared memory needed (direct parameter access)
         stream
     );
 
