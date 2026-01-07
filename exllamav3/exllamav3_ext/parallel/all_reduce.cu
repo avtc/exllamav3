@@ -801,6 +801,10 @@ void pg_all_reduce_p2p_v2
     if (data_size < threads * 16) threads = CEIL_DIVIDE(data_size, 16);
     threads = ((threads + 31) / 32) * 32;
 
+    // Prepare temporary variables for kernel args (CUDA kernelArgs needs pointers to values)
+    P2PBarrier** temp_barrier_array = cached_barrier_array[this_device];
+    float4** temp_p2p_array = cached_p2p_ptr_array[this_device];
+
     void* kernelArgs[] =
     {
         (void*)& ctx,
@@ -808,10 +812,10 @@ void pg_all_reduce_p2p_v2
         (void*)& this_device,
         (void*)& data_ptr,
         (void*)& data_size,
-        (void*)cached_barrier_array[this_device],  // This device's barrier row (decays to P2PBarrier**)
-        (void*)cached_p2p_ptr_array[this_device],  // This device's P2P row (decays to float4**)
-        (void*)& cached_num_ranks,                // Pre-calculated
-        (void*)& cached_this_rank[this_device]     // CRITICAL: THIS device's rank, not some other device's!
+        (void*)& temp_barrier_array,  // Pointer to variable holding the pointer array
+        (void*)& temp_p2p_array,      // Pointer to variable holding the pointer array
+        (void*)& cached_num_ranks,    // Pre-calculated
+        (void*)& cached_this_rank[this_device]  // CRITICAL: THIS device's rank
     };
 
     cudaLaunchCooperativeKernel
