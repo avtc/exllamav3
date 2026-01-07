@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from .mlp import MLP, GatedMLP
 from ..model.model_tp_alloc import TPAllocation
 from ..util import profile_opt
+from ..util.timing import timed_operation
 
 
 @dataclass
@@ -509,7 +510,8 @@ class BlockSparseMLP(Module):
 
         # Routing
         if self.routing_gate is not None:
-            selected_experts, routing_weights = self.routing_fn(bsz, self.routing_cfg, y, params)
+            with timed_operation("moe", "routing", params):
+                selected_experts, routing_weights = self.routing_fn(bsz, self.routing_cfg, y, params)
         else:
             selected_experts = torch.empty((bsz, self.num_experts_per_tok), dtype = torch.long, device = self.device)
             routing_weights = torch.empty((bsz, self.num_experts_per_tok), dtype = torch.half, device = self.device)

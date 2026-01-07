@@ -2,6 +2,7 @@ from __future__ import annotations
 from .generator import Generator
 from .job import Job
 import asyncio
+from ..util.timing import is_enabled, print_summary, reset
 
 class AsyncGenerator:
     """
@@ -27,6 +28,10 @@ class AsyncGenerator:
                     await async_job.put_result(result)
                     if result["eos"]:
                         del self.jobs[job]
+                        # Print timing summary when all jobs complete
+                        if is_enabled() and len(self.jobs) == 0:
+                            print_summary()
+                            reset()
                 await asyncio.sleep(0)
         except asyncio.CancelledError:
             # Silently return on cancel

@@ -15,6 +15,7 @@ from ..util.tensor import SeqTensor
 from ..tokenizer import MMEmbedding
 from functools import lru_cache
 from ..util import profile_opt
+from ..util.timing import timed_operation
 
 # Convert list of strings to UTF32 format to pass by reference to partial matching function
 @lru_cache(100)
@@ -403,13 +404,14 @@ class Job:
         # assert self.is_prefill_done()
         # assert all(seq.live for seq in self.sequences)
 
-        next_token = self.sampler.forward(
-            logits,
-            self.current_pinned_ids,
-            self.rng.randint(0, (1<<32)-1),
-            self.generator.tokenizer,
-            logit_mask = self.device_logit_mask
-        )
+        with timed_operation("sampling", "sample_token", {"prefill": False}):
+            next_token = self.sampler.forward(
+                logits,
+                self.current_pinned_ids,
+                self.rng.randint(0, (1<<32)-1),
+                self.generator.tokenizer,
+                logit_mask = self.device_logit_mask
+            )
 
         next_prob, next_k_tokens, next_k_probs = None, None, None
 
@@ -796,13 +798,14 @@ class Job:
         logits_reshaped = logits.reshape(num_cfg * num_sequences, -1)
 
         # Batch sample all sequences at once
-        next_token = self.sampler.forward(
-            logits_reshaped,
-            self.current_pinned_ids,
-            self.rng.randint(0, (1<<32)-1),
-            self.generator.tokenizer,
-            logit_mask = self.device_logit_mask
-        )
+        with timed_operation("sampling", "batch_sample", {"prefill": False}):
+            next_token = self.sampler.forward(
+                logits_reshaped,
+                self.current_pinned_ids,
+                self.rng.randint(0, (1<<32)-1),
+                self.generator.tokenizer,
+                logit_mask = self.device_logit_mask
+            )
 
         # Reshape back to [num_cfg, num_sequences]
         next_tokens = next_token.reshape(num_cfg, num_sequences)

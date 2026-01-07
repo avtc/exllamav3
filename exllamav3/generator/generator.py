@@ -17,7 +17,7 @@ import threading
 from ..tokenizer import MMEmbedding
 from ..util import profile_opt
 from ..model.model_tp_backend import OptimizationFlags
-from ..util.timing import is_enabled, reset, print_summary
+from ..util.timing import is_enabled, reset, print_summary, timed_operation
 
 class Generator:
 
@@ -450,22 +450,23 @@ class Generator:
                 batch += 1
 
         # Collect input IDs and indexed embeddings
-        input_ids_list = []
-        active_embeddings = []
-        logit_mapping = []
-        batch_jobs = []
-        for job in self.active_jobs:
+        with timed_operation("job_mgmt", "batch_prep", {"prefill": False}):
+            input_ids_list = []
+            active_embeddings = []
+            logit_mapping = []
+            batch_jobs = []
+            for job in self.active_jobs:
+                logit_mapping.append(len(input_ids_list))
+                if not job.is_prefill_done(): continue
+                if job.time_first_token is None:
+                    cuda_sync_active()
+                    job.time_first_token = time.time()
+                job_ids = job.get_input_ids_list(draft_tokens, len(input_ids_list), add_to_cache = True)
+                input_ids_list += job_ids
+                batch_jobs.append(job)
+                active_embeddings += job.embeddings
             logit_mapping.append(len(input_ids_list))
-            if not job.is_prefill_done(): continue
-            if job.time_first_token is None:
-                cuda_sync_active()
-                job.time_first_token = time.time()
-            job_ids = job.get_input_ids_list(draft_tokens, len(input_ids_list), add_to_cache = True)
-            input_ids_list += job_ids
-            batch_jobs.append(job)
-            active_embeddings += job.embeddings
-        logit_mapping.append(len(input_ids_list))
-        batch_ids = torch.cat(input_ids_list, dim = 0)
+            batch_ids = torch.cat(input_ids_list, dim = 0)
 
         # Collect recurrent states for batch
         # TODO: Figure out a way to minimize redundant batching and unbatching
@@ -637,7 +638,8 @@ class Generator:
 
         # Defrag
         if num_jobs and not self.num_remaining_jobs():
-            self.pagetable.defrag()
+            with timed_operation("cache", "defrag", {"prefill": False}):
+                self.pagetable.defrag()
 
 
     def iterate_start_jobs(self, results: list):

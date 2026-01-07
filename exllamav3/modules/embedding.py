@@ -4,6 +4,7 @@ import torch
 from torch import nn
 from ..model.config import Config
 from ..util.tensor import to2
+from ..util.timing import timed_operation
 from . import Module
 from ..tokenizer.mm_embedding import FIRST_MM_EMBEDDING_INDEX
 from ..model.model_tp_alloc import TPAllocation
@@ -90,57 +91,58 @@ class Embedding(Module):
             indexed_act = [im.any() for im in indexed_masks]
             use_indexed_emb = any(indexed_act)
 
-        # Mixed embeddings when needed
-        if indexed_emb and use_indexed_emb:
-            bsz, seq_len = input_ids.shape
-            combined_emb = torch.empty((bsz, seq_len, self.hidden_size), device = self.device, dtype = out_dtype)
+        with timed_operation("embedding", "forward", params):
+            # Mixed embeddings when needed
+            if indexed_emb and use_indexed_emb:
+                bsz, seq_len = input_ids.shape
+                combined_emb = torch.empty((bsz, seq_len, self.hidden_size), device = self.device, dtype = out_dtype)
 
-            # Prepare deepstack embedding tensors
-            if any(ie.deepstack_embeddings is not None for ie in indexed_emb) and indexed_act:
-                assert all(ie.deepstack_embeddings is not None for ie in indexed_emb)
-                num_layers = len(indexed_emb[0].deepstack_embeddings)
-                assert all(num_layers == len(ie.deepstack_embeddings) is not None for ie in indexed_emb)
-                deepstack_emb = [torch.zeros_like(combined_emb) for _ in range(num_layers)]
+                # Prepare deepstack embedding tensors
+                if any(ie.deepstack_embeddings is not None for ie in indexed_emb) and indexed_act:
+                    assert all(ie.deepstack_embeddings is not None for ie in indexed_emb)
+                    num_layers = len(indexed_emb[0].deepstack_embeddings)
+                    assert all(num_layers == len(ie.deepstack_embeddings) is not None for ie in indexed_emb)
+                    deepstack_emb = [torch.zeros_like(combined_emb) for _ in range(num_layers)]
+                else:
+                    deepstack_emb = None
+
+                # Insert standard embeddings
+                if standard_mask.any():
+                    for i in range(bsz):
+                        standard_ids_row = input_ids[i][standard_mask[i]]
+                        standard_emb_row = self.embedding(standard_ids_row)
+                        combined_emb[i][standard_mask[i]] = standard_emb_row.to(out_dtype)
+
+                # Only normalize standard embeddings
+                if self.normalize:
+                    combined_emb *= combined_emb.shape[-1] ** 0.5
+
+                # Insert indexed embeddings
+                for im, ie, act in zip(indexed_masks, indexed_emb, indexed_act):
+                    if not act:
+                        continue
+                    for i in range(bsz):
+                        indexed_ids_row = input_ids[i][im[i]] - ie.first_index
+                        combined_emb[i][im[i]] = ie.embeddings[indexed_ids_row].to(out_dtype)
+
+                        # Prepare deepstack embeddings
+                        if ie.deepstack_embeddings is not None:
+                            for layer, de in enumerate(ie.deepstack_embeddings):
+                                deepstack_emb[layer][i][im[i]] = de[indexed_ids_row].to(out_dtype)
+
+                # Save deepstack embeddings to params
+                if deepstack_emb is not None:
+                    params["deepstack_emb"] = deepstack_emb
+
+                return combined_emb if self.multiplier == 1.0 else combined_emb * self.multiplier
+
+            # No indexed embeddings, or none in current batch
             else:
-                deepstack_emb = None
-
-            # Insert standard embeddings
-            if standard_mask.any():
-                for i in range(bsz):
-                    standard_ids_row = input_ids[i][standard_mask[i]]
-                    standard_emb_row = self.embedding(standard_ids_row)
-                    combined_emb[i][standard_mask[i]] = standard_emb_row.to(out_dtype)
-
-            # Only normalize standard embeddings
-            if self.normalize:
-                combined_emb *= combined_emb.shape[-1] ** 0.5
-
-            # Insert indexed embeddings
-            for im, ie, act in zip(indexed_masks, indexed_emb, indexed_act):
-                if not act:
-                    continue
-                for i in range(bsz):
-                    indexed_ids_row = input_ids[i][im[i]] - ie.first_index
-                    combined_emb[i][im[i]] = ie.embeddings[indexed_ids_row].to(out_dtype)
-
-                    # Prepare deepstack embeddings
-                    if ie.deepstack_embeddings is not None:
-                        for layer, de in enumerate(ie.deepstack_embeddings):
-                            deepstack_emb[layer][i][im[i]] = de[indexed_ids_row].to(out_dtype)
-
-            # Save deepstack embeddings to params
-            if deepstack_emb is not None:
-                params["deepstack_emb"] = deepstack_emb
-
-            return combined_emb if self.multiplier == 1.0 else combined_emb * self.multiplier
-
-        # No indexed embeddings, or none in current batch
-        else:
-            x = self.embedding.forward(x)
-            x = to2(x, out_dtype, self.out_dtype)
-            if self.normalize:
-                x *= x.shape[-1] ** 0.5
-            return x if self.multiplier == 1.0 else x * self.multiplier
+                x = self.embedding.forward(x)
+                x = to2(x, out_dtype, self.out_dtype)
+                if self.normalize:
+                    x *= x.shape[-1] ** 0.5
+                return x if self.multiplier == 1.0 else x * self.multiplier
 
     def make_tp_allocation(self, options: dict) -> list[TPAllocation]:
         return []
