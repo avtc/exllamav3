@@ -355,51 +355,30 @@ void pg_all_reduce_p2p_kernel_v2
     int this_device,
     uint8_t* __restrict__ data_ptr,
     const size_t data_size,
-    P2PBarrierPtrs barrier_ptrs,  // Struct containing array of barrier pointers
-    P2PPtrs p2p_ptrs
+    P2PBarrier** barrier_ptr_array,    // Pre-built compact array
+    uint8_t** p2p_ptr_array,           // Pre-built compact array
+    int num_ranks,                     // Pre-calculated
+    int this_rank                      // Pre-calculated
 )
 {
     int t = threadIdx.x;
-    int num_ranks = __popc(device_mask);
     if (num_ranks <= 1) return;
 
-    // Load P2P pointers into shared memory for faster access
+    // Load P2P pointers into shared memory (direct copy, no nested loops!)
     extern __shared__ uint8_t smem[];
-    uint8_t** p2p_ptrs_s = (uint8_t**)smem;
+    float4** p2p_ptrs_s = (float4**)smem;  // Use float4** to avoid casts in reduce loop
 
-    // Only first num_ranks threads load pointers (more efficient)
-    if (t < num_ranks)
-    {
-        // Find the actual device index for this thread
-        int dev_idx = 0;
-        for (int bit = 0; bit < MAX_DEVICES; ++bit)
-        {
-            if ((device_mask >> bit) & 1)
-            {
-                if (dev_idx == t)
-                {
-                    p2p_ptrs_s[t] = (uint8_t*)p2p_ptrs.ptrs[bit];
-                    break;
-                }
-                dev_idx++;
-            }
-        }
+    if (t < num_ranks) {
+        p2p_ptrs_s[t] = (float4*)p2p_ptr_array[t];  // Direct assignment
     }
     __syncthreads();
 
-    // Get this device's rank within the active group
-    int this_rank = 0;
-    for (int bit = 0; bit < this_device; ++bit)
-    {
-        if ((device_mask >> bit) & 1) this_rank++;
-    }
-
     // Validate our P2P pointer
-    uint8_t* my_p2p_ptr = p2p_ptrs_s[this_rank];
+    float4* my_p2p_ptr = p2p_ptrs_s[this_rank];
     if (!my_p2p_ptr)
     {
         if (t == 0) {
-            printf("ExLlamaV3: P2P ERROR - Device %d has no P2P pointer!\n", this_device);
+            printf("ExLlamaV3: P2P ERROR - Device %d (rank %d) has no P2P pointer!\n", this_device, this_rank);
         }
         return;
     }
@@ -415,39 +394,24 @@ void pg_all_reduce_p2p_kernel_v2
     __syncthreads();
 
     // Phase 2: vLLM-style P2P barrier - wait for all GPUs (GPU-only, no CPU polling)
-    // Convert struct to array for barrier function (only copy active devices)
-    P2PBarrier* barrier_ptr_array[MAX_DEVICES];
-    for (int i = 0; i < num_ranks; ++i) {
-        // Find the i-th active device
-        int rank = 0;
-        for (int bit = 0; bit < MAX_DEVICES; ++bit) {
-            if ((device_mask >> bit) & 1) {
-                if (rank == i) {
-                    barrier_ptr_array[i] = (P2PBarrier*)barrier_ptrs.barriers[bit];
-                    break;
-                }
-                rank++;
-            }
-        }
-    }
+    // Array already pre-built on host, no nested loops needed!
     p2p_barrier_vllm_style(barrier_ptr_array, this_rank, num_ranks, true);
 
     // Phase 3: Reduce - read from all P2P buffers and accumulate using vectorized loads
     // Single 128-bit load from each GPU (compiler generates ld.f32.v4)
+    // No casts needed - p2p_ptrs_s is already float4**
     for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
     {
         // Index in terms of float4 elements (16 bytes each)
         size_t vec_idx = offset / 16;
 
-        // Load from first GPU
-        const float4* ptr0 = (const float4*)p2p_ptrs_s[0];
-        float4 sum = ptr0[vec_idx];
+        // Load from first GPU (already float4*, no cast needed)
+        float4 sum = p2p_ptrs_s[0][vec_idx];
 
-        // Accumulate from remaining GPUs (vectorized loads)
+        // Accumulate from remaining GPUs (vectorized loads, no casts)
         for (int i = 1; i < num_ranks; ++i)
         {
-            const float4* ptr = (const float4*)p2p_ptrs_s[i];
-            float4 val = ptr[vec_idx];
+            float4 val = p2p_ptrs_s[i][vec_idx];
             sum.x += val.x;
             sum.y += val.y;
             sum.z += val.z;
@@ -755,6 +719,10 @@ void pg_all_reduce_p2p_v2
     static bool p2p_v2_validated = false;
     static P2PPtrs cached_p2p_ptrs;
     static P2PBarrierPtrs cached_barrier_ptrs;
+    static P2PBarrier* cached_barrier_array[MAX_DEVICES];
+    static uint8_t* cached_p2p_ptr_array[MAX_DEVICES];
+    static int cached_num_ranks = 0;
+    static int cached_this_rank = 0;
     static int validation_attempts = 0;
 
     // Validate once and cache (no retries - fail fast if P2P handles not opened)
@@ -781,8 +749,21 @@ void pg_all_reduce_p2p_v2
         validation_attempts++;
 
         if (all_valid) {
+            // Build compact arrays (only active devices) for kernel efficiency
+            int idx = 0;
+            for (int bit = 0; bit < MAX_DEVICES; ++bit) {
+                if ((device_mask >> bit) & 1) {
+                    cached_barrier_array[idx] = (P2PBarrier*)cached_barrier_ptrs.barriers[bit];
+                    cached_p2p_ptr_array[idx] = (uint8_t*)cached_p2p_ptrs.ptrs[bit];
+                    idx++;
+                }
+            }
+            cached_num_ranks = num_ranks;
+            cached_this_rank = __popc(device_mask & ((1 << this_device) - 1));
+
             p2p_v2_validated = true;
-            printf("ExLlamaV3: [Device %d] P2P v2: Pre-registered buffers validated\n", this_device);
+            printf("ExLlamaV3: [Device %d] P2P v2: Pre-registered buffers validated (rank=%d/%d)\n",
+                   this_device, cached_this_rank, cached_num_ranks);
         } else {
             printf("ExLlamaV3: [Device %d] P2P v2 ERROR: Not all pointers available. EXLLAMA_TP_P2P=1 requires all P2P handles to be opened.\n", this_device);
             TORCH_CHECK(false, "P2P validation failed - EXLLAMA_TP_P2P=1 requires all P2P handles to be opened");
@@ -810,8 +791,10 @@ void pg_all_reduce_p2p_v2
         (void*)& this_device,
         (void*)& data_ptr,
         (void*)& data_size,
-        (void*)& cached_barrier_ptrs,  // Pre-registered barrier pointers
-        (void*)& cached_p2p_ptrs       // Pre-registered P2P pointers
+        (void*)& cached_barrier_array,  // Pre-built compact array
+        (void*)& cached_p2p_ptr_array,  // Pre-built compact array
+        (void*)& cached_num_ranks,      // Pre-calculated
+        (void*)& cached_this_rank       // Pre-calculated
     };
 
     cudaLaunchCooperativeKernel
@@ -820,7 +803,7 @@ void pg_all_reduce_p2p_v2
         dim3(1),
         dim3(threads),
         kernelArgs,
-        sizeof(uint8_t*) * MAX_DEVICES,  // Shared memory for pointer array
+        sizeof(float4*) * MAX_DEVICES,  // Shared memory for float4* pointer array
         stream
     );
 
