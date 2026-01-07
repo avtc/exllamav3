@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing_extensions import override
+import os
 import torch
 import torch.nn.functional as F
 from ..model.config import Config
@@ -12,6 +13,13 @@ from .multilinear import MultiLinear
 from ..ext import exllamav3_ext as ext
 from ..model.model_tp_alloc import TPAllocation
 from ..util import profile_opt
+
+# Attention CUDA graph optimization (enabled by default, set EXLLAMA_ATTENTION_CUDA_GRAPH=0 to disable)
+_attention_cuda_graph_enabled = os.getenv("EXLLAMA_ATTENTION_CUDA_GRAPH", "1") == "1"
+if _attention_cuda_graph_enabled:
+    print("[Attention] CUDA graph optimization: enabled")
+else:
+    print("[Attention] CUDA graph optimization: disabled (EXLLAMA_ATTENTION_CUDA_GRAPH=0)")
 
 """
 SDPA:
@@ -248,6 +256,7 @@ class Attention(Module):
         self.k_norm_tensor = None
 
         self.has_split_cache = False
+        self.bc = None
 
 
     @override
@@ -290,6 +299,36 @@ class Attention(Module):
         if self.q_norm and isinstance(self.q_norm, RMSNorm) and not self.q_norm.span_heads:
             self.q_norm_tensor = self.q_norm.weight.data
             self.k_norm_tensor = self.k_norm.weight.data
+
+        # BC - Attention CUDA graph optimization (enabled by default, set EXLLAMA_ATTENTION_CUDA_GRAPH=0 to disable)
+        if (
+            _attention_cuda_graph_enabled and
+            self.q_proj.quant_type == "exl3" and
+            self.k_proj.quant_type == "exl3" and
+            self.v_proj.quant_type == "exl3" and
+            self.o_proj.quant_type == "exl3" and
+            self.rope is not None and
+            not self.interleaved_gate
+        ):
+             # Ensure rope cache is populated
+             if self.rope.cached_sin is None or self.rope.cached_sin.shape[0] < 32768:
+                 self.rope.expand_cache(32768)
+
+             self.bc = ext.BC_Attention(
+                 self.q_proj.inner.bc,
+                 self.k_proj.inner.bc,
+                 self.v_proj.inner.bc,
+                 self.o_proj.inner.bc,
+                 self.q_norm_tensor if self.q_norm_tensor is not None else torch.empty(0, device=device, dtype=torch.half),
+                 self.k_norm_tensor if self.k_norm_tensor is not None else torch.empty(0, device=device, dtype=torch.half),
+                 self.norm_eps,
+                 self.rope.cached_sin,
+                 self.rope.cached_cos,
+                 self.hidden_size,
+                 self.num_q_heads,
+                 self.head_dim,
+                 self.num_kv_heads
+             )
 
 
     @override
@@ -516,6 +555,45 @@ class Attention(Module):
         q = q.view(bsz, seqlen, self.num_q_heads, self.head_dim)
         k = k.view(bsz, seqlen, self.num_kv_heads, self.head_dim)
         v = v.view(bsz, seqlen, self.num_kv_heads, self.head_dim)
+
+        if self.bc and bsz == 1 and seqlen == 1 and (not self.q_norm_tensor or not self.q_norm.span_heads):
+            # Projections (Graph) + RoPE (Eager)
+            past_len = cache_seqlens[0].item()
+            q_list = self.bc.run_proj(x, past_len)
+            q, k, v = q_list[0], q_list[1], q_list[2]
+            q = q.view(1, 1, self.num_q_heads, self.head_dim)
+            k = k.view(1, 1, self.num_kv_heads, self.head_dim)
+            v = v.view(1, 1, self.num_kv_heads, self.head_dim)
+            
+            # Flash Attention
+            if self.has_split_cache:
+                cache_k, cache_v = self.tp_cache_lookup[cache].get_kv(cache_seqlens, block_table)
+            else:
+                cache_k, cache_v = cache.get_layer(self.layer_idx, cache_seqlens, block_table)
+
+            o = flash_attn_with_kvcache(
+                q = q,
+                k = k,
+                v = v,
+                k_cache = cache_k,
+                v_cache = cache_v,
+                block_table = block_table,
+                cache_seqlens = cache_seqlens,
+                causal = causal,
+                softmax_scale = self.sm_scale,
+                window_size = (self.sliding_window, self.sliding_window),
+                softcap = self.logit_softcapping
+            )
+
+            if self.has_split_cache:
+                self.tp_cache_lookup[cache].update_kv(cache_seqlens, block_table, cache_k, cache_v, seqlen)
+            else:
+                cache.update_layer(self.layer_idx, cache_seqlens, block_table, cache_k, cache_v, seqlen)
+
+            # Output Projection (Graph)
+            o = o.view(1, 1, self.num_q_heads * self.head_dim)
+            o = self.bc.run_out(o)
+            return o
 
         # TODO: Add LayerNorm option to fused norm/RoPE kernel
         if self.q_norm and (not self.rope or self.q_norm_tensor is None):

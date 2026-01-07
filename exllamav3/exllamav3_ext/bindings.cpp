@@ -162,4 +162,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     #include "libtorch/gated_rmsnorm_bc.h"
     #include "libtorch/mlp_bc.h"
     #include "libtorch/blocksparse_mlp_bc.h"
+    #include "libtorch/attn_bc.h"
+    bind_attn_bc(m);
 }
