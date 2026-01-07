@@ -759,7 +759,7 @@ void pg_all_reduce_p2p_v2
                 }
             }
             cached_num_ranks = num_ranks;
-            cached_this_rank = __popc(device_mask & ((1 << this_device) - 1));
+            cached_this_rank = __builtin_popcount(device_mask & ((1 << this_device) - 1));
 
             p2p_v2_validated = true;
             printf("ExLlamaV3: [Device %d] P2P v2: Pre-registered buffers validated (rank=%d/%d)\n",
