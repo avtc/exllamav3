@@ -814,12 +814,10 @@ void pg_all_reduce_p2p_v2
     int size_in_float4 = data_size / 16;  // Size in float4 elements
     int this_rank = cached_this_rank[this_device];
 
-    // Use optimized kernel with template-based GPU count for loop unrolling
-    // Launch with multiple blocks (up to 36, like vLLM) for better SM utilization
-    const int threads = 512;  // Match vLLM
-    const int max_blocks = 36;  // Match vLLM
-    int blocks = std::min(max_blocks, (size_in_float4 + threads - 1) / threads);
-    blocks = std::max(1, blocks);
+    // NOTE: Limit to 1 block because P2PBarrier.flag[MAX_DEVICES] only has 16 elements
+    // Multi-block would require restructuring the barrier like vLLM's Signal struct
+    const int threads = 512;  // Match vLLM thread count
+    const int blocks = 1;     // Single block for now (barrier limitation)
 
     // Dispatch based on GPU count for compile-time unrolling
     #define LAUNCH_KERNEL(ngpus) \
