@@ -52,13 +52,13 @@ def print_summary():
     if not _enabled:
         return
 
-    print("\n" + "="*80)
+    print("\n" + "="*100)
     print("TIMING SUMMARY (Decoding Stage Only - Sorted by Total Time)")
-    print("="*80)
+    print("="*100)
 
     if not _stats:
         print("No timing data collected (still in prefill mode or no decode operations)")
-        print("="*80 + "\n")
+        print("="*100 + "\n")
         return
 
     # Sort by total time (descending)
@@ -67,19 +67,21 @@ def print_summary():
     total_ns = sum(s["total_ns"] for s in _stats.values())
     total_count = sum(s["count"] for s in _stats.values())
 
-    print(f"{'Operation':<45} {'Count':>10} {'Total (ms)':>12} {'Avg (μs)':>12} {'%':>8}")
-    print("-"*80)
+    print(f"{'Operation':<45} {'Count':>10} {'Total (ms)':>12} {'Avg (μs)':>12} {'Ops/sec':>12} {'%':>8}")
+    print("-"*100)
 
     for key, stats in sorted_stats:
         total_ms = stats["total_ns"] / 1e6
         avg_us = (stats["total_ns"] / stats["count"]) / 1e3 if stats["count"] > 0 else 0
+        ops_per_sec = 1e6 / avg_us if avg_us > 0 else 0
         pct = 100 * stats["total_ns"] / total_ns if total_ns > 0 else 0
-        print(f"{key:<45} {stats['count']:>10} {total_ms:>12.3f} {avg_us:>12.3f} {pct:>7.1f}%")
+        print(f"{key:<45} {stats['count']:>10} {total_ms:>12.3f} {avg_us:>12.3f} {ops_per_sec:>12.1f} {pct:>7.1f}%")
 
-    print("-"*80)
+    print("-"*100)
     avg_total_us = (total_ns / total_count) / 1e3 if total_count > 0 else 0
-    print(f"{'TOTAL':<45} {total_count:>10} {total_ns/1e6:>12.3f} {avg_total_us:>12.3f}")
-    print("="*80 + "\n")
+    total_ops_per_sec = 1e6 / avg_total_us if avg_total_us > 0 else 0
+    print(f"{'TOTAL':<45} {total_count:>10} {total_ns/1e6:>12.3f} {avg_total_us:>12.3f} {total_ops_per_sec:>12.1f}")
+    print("="*100 + "\n")
 
 def reset():
     """Reset all timing statistics."""
