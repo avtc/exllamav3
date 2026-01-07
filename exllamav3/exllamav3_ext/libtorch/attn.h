@@ -26,9 +26,6 @@ struct BC_Attention
     at::Tensor k_norm_weight;
     float norm_epsilon;
 
-    at::Tensor sin;
-    at::Tensor cos;
-
     // Temp tensors
     at::Tensor temp_q;
     at::Tensor temp_k;
@@ -47,8 +44,6 @@ struct BC_Attention
         at::Tensor _q_norm_weight,
         at::Tensor _k_norm_weight,
         float _norm_epsilon,
-        at::Tensor _sin,
-        at::Tensor _cos,
         int _hidden_size,
         int _num_heads,
         int _head_dim,
@@ -61,8 +56,6 @@ struct BC_Attention
         q_norm_weight       (std::move(_q_norm_weight)),
         k_norm_weight       (std::move(_k_norm_weight)),
         norm_epsilon        (_norm_epsilon),
-        sin                 (std::move(_sin)),
-        cos                 (std::move(_cos)),
         hidden_size         (_hidden_size),
         num_heads           (_num_heads),
         head_dim            (_head_dim),
@@ -72,9 +65,8 @@ struct BC_Attention
         seq_len = 1;
     }
 
-    // Part 1: Projections + Norms + RoPE
+    // Part 1: Projections (CUDA graph captures GEMM, norms and RoPE run eagerly)
     std::vector<at::Tensor> run_proj(const at::Tensor& x, int past_len);
-    void run_proj_gr(const at::Tensor& x, int past_len, Graph* graph);
 
     // Part 2: Output Projection
     at::Tensor run_out(const at::Tensor& x);

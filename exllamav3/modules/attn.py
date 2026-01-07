@@ -310,10 +310,6 @@ class Attention(Module):
             self.rope is not None and
             not self.interleaved_gate
         ):
-             # Ensure rope cache is populated
-             if self.rope.cached_sin is None or self.rope.cached_sin.shape[0] < 32768:
-                 self.rope.expand_cache(32768)
-
              self.bc = ext.BC_Attention(
                  self.q_proj.inner.bc,
                  self.k_proj.inner.bc,
@@ -322,8 +318,6 @@ class Attention(Module):
                  self.q_norm_tensor if self.q_norm_tensor is not None else torch.empty(0, device=device, dtype=torch.half),
                  self.k_norm_tensor if self.k_norm_tensor is not None else torch.empty(0, device=device, dtype=torch.half),
                  self.norm_eps,
-                 self.rope.cached_sin,
-                 self.rope.cached_cos,
                  self.hidden_size,
                  self.num_q_heads,
                  self.head_dim,
@@ -557,14 +551,29 @@ class Attention(Module):
         v = v.view(bsz, seqlen, self.num_kv_heads, self.head_dim)
 
         if self.bc and bsz == 1 and seqlen == 1 and (not self.q_norm_tensor or not self.q_norm.span_heads):
-            # Projections (Graph) + RoPE (Eager)
+            # Projections (Graph) + Norms (Eager) + RoPE (Eager)
             past_len = cache_seqlens[0].item()
             q_list = self.bc.run_proj(x, past_len)
             q, k, v = q_list[0], q_list[1], q_list[2]
             q = q.view(1, 1, self.num_q_heads, self.head_dim)
             k = k.view(1, 1, self.num_kv_heads, self.head_dim)
             v = v.view(1, 1, self.num_kv_heads, self.head_dim)
-            
+
+            # RoPE (handled in Python since past_len changes every step)
+            if self.rope:
+                q, k = self.rope.apply(
+                    q, k,
+                    position,
+                    positions,
+                    position_ids,
+                    True,
+                    self.q_norm_tensor,
+                    self.k_norm_tensor,
+                    self.norm_eps,
+                    self.norm_constant_bias,
+                    inv_freq
+                )
+
             # Flash Attention
             if self.has_split_cache:
                 cache_k, cache_v = self.tp_cache_lookup[cache].get_kv(cache_seqlens, block_table)
