@@ -550,7 +550,7 @@ class Attention(Module):
         k = k.view(bsz, seqlen, self.num_kv_heads, self.head_dim)
         v = v.view(bsz, seqlen, self.num_kv_heads, self.head_dim)
 
-        if self.bc and bsz == 1 and seqlen == 1 and (not self.q_norm_tensor or not self.q_norm.span_heads):
+        if self.bc and bsz == 1 and seqlen == 1 and (self.q_norm is None or not self.q_norm.span_heads):
             # Projections (Graph) + Norms (Eager) + RoPE (Eager)
             past_len = cache_seqlens[0].item()
             q_list = self.bc.run_proj(x, past_len)
