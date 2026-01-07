@@ -720,18 +720,17 @@ void pg_all_reduce_p2p_v2
 
     if (num_ranks <= 1) return;
 
-    // Pre-register P2P buffers using static caching (similar to pg_all_reduce lines 565-668)
+    // Pre-register P2P buffers using static caching (per-device)
     static bool p2p_v2_validated = false;
     static P2PPtrs cached_p2p_ptrs;
     static P2PBarrierPtrs cached_barrier_ptrs;
-    static P2PBarrier* cached_barrier_array[MAX_DEVICES];
-    static float4* cached_p2p_ptr_array[MAX_DEVICES];  // float4* to avoid casts in kernel
-    static int cached_num_ranks = 0;
-    static int cached_this_rank = 0;
-    static int validation_attempts = 0;
+    static P2PBarrier* cached_barrier_array[MAX_DEVICES][MAX_DEVICES];  // [this_device][rank] - per-device cache
+    static float4* cached_p2p_ptr_array[MAX_DEVICES][MAX_DEVICES];      // [this_device][rank] - per-device cache
+    static int cached_num_ranks = 0;  // Same for all devices, no need for array
+    static int cached_this_rank = 0;  // Each device knows its rank, no need for array
 
     // Validate once and cache (no retries - fail fast if P2P handles not opened)
-    if (!p2p_v2_validated && validation_attempts < 1)
+    if (!p2p_v2_validated)
     {
         bool all_valid = true;
 
@@ -753,15 +752,13 @@ void pg_all_reduce_p2p_v2
             }
         }
 
-        validation_attempts++;
-
         if (all_valid) {
             // Build compact arrays (only active devices) for kernel efficiency
             int idx = 0;
             for (int bit = 0; bit < MAX_DEVICES; ++bit) {
                 if ((device_mask >> bit) & 1) {
-                    cached_barrier_array[idx] = (P2PBarrier*)cached_barrier_ptrs.barriers[bit];
-                    cached_p2p_ptr_array[idx] = (float4*)cached_p2p_ptrs.ptrs[bit];  // Cast to float4*
+                    cached_barrier_array[this_device][idx] = (P2PBarrier*)cached_barrier_ptrs.barriers[bit];  // Store in this device's row
+                    cached_p2p_ptr_array[this_device][idx] = (float4*)cached_p2p_ptrs.ptrs[bit];              // Store in this device's row
                     idx++;
                 }
             }
@@ -772,10 +769,10 @@ void pg_all_reduce_p2p_v2
             printf("ExLlamaV3: [Device %d] P2P v2: Pre-registered buffers validated (rank=%d/%d)\n",
                    this_device, cached_this_rank, cached_num_ranks);
 
-            // Trace: Log all pointers in compact array
+            // Trace: Log all pointers in this device's compact arrays
             printf("ExLlamaV3: [Device %d] P2P v2: Compact P2P pointer array:\n", this_device);
             for (int i = 0; i < cached_num_ranks; ++i) {
-                printf("  [%d] = %p\n", i, cached_p2p_ptr_array[i]);
+                printf("  [%d] = %p\n", i, cached_p2p_ptr_array[this_device][i]);
             }
         } else {
             printf("ExLlamaV3: [Device %d] P2P v2 ERROR: Not all pointers available. EXLLAMA_TP_P2P=1 requires all P2P handles to be opened.\n", this_device);
@@ -804,10 +801,10 @@ void pg_all_reduce_p2p_v2
         (void*)& this_device,
         (void*)& data_ptr,
         (void*)& data_size,
-        (void*)& cached_barrier_array,  // Pre-built compact array
-        (void*)& cached_p2p_ptr_array,  // Pre-built compact array
-        (void*)& cached_num_ranks,      // Pre-calculated
-        (void*)& cached_this_rank       // Pre-calculated
+        (void*)cached_barrier_array[this_device],  // This device's barrier row (decays to P2PBarrier**)
+        (void*)cached_p2p_ptr_array[this_device],  // This device's P2P row (decays to float4**)
+        (void*)& cached_num_ranks,                // Pre-calculated
+        (void*)& cached_this_rank                 // Pre-calculated
     };
 
     cudaLaunchCooperativeKernel
