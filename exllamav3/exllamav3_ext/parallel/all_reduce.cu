@@ -398,7 +398,9 @@ void pg_all_reduce_p2p_kernel_v2
     // Phase 1: Copy local data to P2P buffer
     for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
     {
-        *((uint4*)(my_p2p_ptr + offset)) = *((uint4*)(data_ptr + offset));
+        // Use vec_idx for float4 array indexing (prevents 16x overrun bug)
+        size_t vec_idx = offset / 16;
+        my_p2p_ptr[vec_idx] = *((float4*)(data_ptr + offset));
     }
 
     // Ensure all writes are visible system-wide
