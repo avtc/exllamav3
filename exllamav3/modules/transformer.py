@@ -6,6 +6,7 @@ from ..model.config import Config
 from . import Module, RMSNorm, LayerNorm, Attention, GatedDeltaNet, GatedMLP, MLP, BlockSparseMLP
 from ..conversion.allocation import allocate_transformer
 from ..util import profile_opt
+from ..util.timing import timed_operation, set_prefill_mode
 
 class TransformerBlock(Module):
 
@@ -214,16 +215,32 @@ class ParallelDecoderBlock(Module):
         out_dtype: torch.dtype | None = None
     ) -> torch.Tensor:
 
-        y = self.input_norm.forward(x, params, out_dtype = torch.half)
-        y1 = self.attn.forward(y, params)
-        if not params.get("prefill"):
-            y2 = self.mlp.forward(y, params)
-            y1 += y2
+        # Set prefill mode based on params
+        is_prefill = params.get("prefill", True)
+        set_prefill_mode(is_prefill)
 
+        # Input norm
+        with timed_operation("norm", "input_norm"):
+            y = self.input_norm.forward(x, params, out_dtype = torch.half)
+
+        # Attention
+        with timed_operation("attn", "forward"):
+            y1 = self.attn.forward(y, params)
+
+        if not is_prefill:
+            # MLP
+            with timed_operation("mlp", "forward"):
+                y2 = self.mlp.forward(y, params)
+                y1 += y2
+
+            # All-reduce
             if self.tp_reduce:
-                params["backend"].all_reduce(y1)
+                with timed_operation("all_reduce", "transformer_block"):
+                    params["backend"].all_reduce(y1)
 
-            x += y1
+            # Residual
+            with timed_operation("residual", "add"):
+                x += y1
 
         return to2(x, out_dtype, self.out_dtype)
 

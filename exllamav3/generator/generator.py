@@ -17,6 +17,7 @@ import threading
 from ..tokenizer import MMEmbedding
 from ..util import profile_opt
 from ..model.model_tp_backend import OptimizationFlags
+from ..util.timing import is_enabled, reset, print_summary
 
 class Generator:
 
@@ -158,6 +159,14 @@ class Generator:
         assert recurrent_checkpoint_interval % PAGE_SIZE == 0, \
             "recurrent_checkpoint_interval must be a multiple of the page size (256)"
         self.recurrent_checkpoint_interval = recurrent_checkpoint_interval
+
+        # Reset timing stats on init
+        if is_enabled():
+            reset()
+
+    def __del__(self):
+        """Print timing summary on cleanup."""
+        print_summary()
 
 
     def num_remaining_jobs(self):

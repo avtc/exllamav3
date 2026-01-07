@@ -7,6 +7,7 @@ from .model_tp_cuda import cuda_host_register, cuda_host_unregister, CUDA_HOST_R
 from ..ext import exllamav3_ext as ext
 from multiprocessing import shared_memory
 from ..util import log_tp
+from ..util.timing import timed_operation
 
 GLOBALS_SIZE = 128*1024
 SHBUF_SIZE = 16 * 1024 ** 2
@@ -587,13 +588,14 @@ class TPBackendNative:
             if TPBackendNative._gpu_reduce_count <= 5:
                 log_tp(self.device, f"All-reduce: P2P v2 path (GPU-only barriers, {tensor.numel()} elems, {tensor_bytes//1024} KB)")
 
-            ext.pg_all_reduce_p2p_v2(
-                self.ptr_g,
-                self.active_devices,
-                self.device,
-                self.active_devices[0],
-                tensor
-            )
+            with timed_operation("all_reduce", "p2p_v2_kernel"):
+                ext.pg_all_reduce_p2p_v2(
+                    self.ptr_g,
+                    self.active_devices,
+                    self.device,
+                    self.active_devices[0],
+                    tensor
+                )
             return
 
         if use_gpu_reduce:
@@ -609,16 +611,17 @@ class TPBackendNative:
             if TPBackendNative._gpu_reduce_count <= 5:
                 log_tp(self.device, f"All-reduce: GPU path ({tensor.numel()} elems, {tensor_bytes//1024} KB)")
 
-            ext.pg_all_reduce(
-                self.ptr_g,
-                self.active_devices,
-                self.device,
-                self.active_devices[0],
-                tensor,
-                self.ptr_b,  # Use larger SHBUF (16 MB vs 2.1 MB)
-                self.shbuf_size,
-                self.abort_flag
-            )
+            with timed_operation("all_reduce", "gpu_kernel"):
+                ext.pg_all_reduce(
+                    self.ptr_g,
+                    self.active_devices,
+                    self.device,
+                    self.active_devices[0],
+                    tensor,
+                    self.ptr_b,  # Use larger SHBUF (16 MB vs 2.1 MB)
+                    self.shbuf_size,
+                    self.abort_flag
+                )
         else:
             # CPU-based all-reduce (original behavior)
             # Goes through RAM: GPU → RAM → CPU (sum) → RAM → GPU
@@ -633,18 +636,19 @@ class TPBackendNative:
                 reason = "disabled" if not OptimizationFlags.ENABLE_GPU_ALL_REDUCE else "too small"
                 log_tp(self.device, f"All-reduce: CPU path ({tensor.numel()} elems, {tensor_bytes//1024} KB, reason: {reason})")
 
-            ext.pg_all_reduce_cpu(
-                self.ptr_g,
-                self.active_devices,
-                self.device,
-                self.active_devices[0],
-                tensor,
-                contribution,
-                self.ptr_r,
-                self.shbuf_size_r,  # Use instance variable (OPT3: dynamic buffer size)
-                self.master,
-                self.abort_flag
-            )
+            with timed_operation("all_reduce", "cpu_kernel"):
+                ext.pg_all_reduce_cpu(
+                    self.ptr_g,
+                    self.active_devices,
+                    self.device,
+                    self.active_devices[0],
+                    tensor,
+                    contribution,
+                    self.ptr_r,
+                    self.shbuf_size_r,  # Use instance variable (OPT3: dynamic buffer size)
+                    self.master,
+                    self.abort_flag
+                )
 
     @classmethod
     def get_all_reduce_stats(cls):
