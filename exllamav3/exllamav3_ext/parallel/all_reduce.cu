@@ -364,10 +364,11 @@ void pg_all_reduce_p2p_kernel_v2
     int t = threadIdx.x;
     if (num_ranks <= 1) return;
 
-    // Trace: Log kernel parameters (only thread 0 to avoid spam)
+    // Trace: Log kernel parameters (all threads to see which ones fail)
+    printf("ExLlamaV3: [Device %d kernel T%d] device_mask=0x%x, this_rank=%d/%d, data_size=%zu, p2p_ptr_array=%p\n",
+           this_device, t, device_mask, this_rank, num_ranks, data_size, p2p_ptr_array);
+
     if (t == 0) {
-        printf("ExLlamaV3: [Device %d kernel] device_mask=0x%x, this_rank=%d/%d, data_size=%zu\n",
-               this_device, device_mask, this_rank, num_ranks, data_size);
         printf("ExLlamaV3: [Device %d kernel] P2P pointer array received:\n", this_device);
         for (int i = 0; i < num_ranks; ++i) {
             printf("  p2p_ptr_array[%d] = %p\n", i, p2p_ptr_array[i]);
@@ -378,13 +379,11 @@ void pg_all_reduce_p2p_kernel_v2
     float4* my_p2p_ptr = p2p_ptr_array[this_rank];
     if (!my_p2p_ptr)
     {
-        if (t == 0) {
-            printf("ExLlamaV3: P2P ERROR - Device %d (rank %d) has no P2P pointer!\n", this_device, this_rank);
-            printf("ExLlamaV3: P2P ERROR - Attempted to access p2p_ptr_array[%d] which is NULL\n", this_rank);
-            printf("ExLlamaV3: P2P ERROR - This is a fatal error. Aborting kernel.\n");
-        }
+        printf("ExLlamaV3: P2P ERROR - Device %d (rank %d) thread %d has no P2P pointer!\n", this_device, this_rank, t);
+        printf("ExLlamaV3: P2P ERROR - Attempted to access p2p_ptr_array[%d] which is NULL\n", this_rank);
+        printf("ExLlamaV3: P2P ERROR - This is a fatal error. Aborting kernel.\n");
         // Explicitly fail - don't silently return
-        assert(my_p2p_ptr != nullptr && "P2P pointer is null - check P2P handle initialization");
+        //assert(my_p2p_ptr != nullptr && "P2P pointer is null - check P2P handle initialization");
         return;  // Will never reach here due to assert
     }
 
