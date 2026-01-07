@@ -346,7 +346,64 @@ void pg_all_reduce_p2p_kernel
     // Other devices will read their own copies in Phase 3
 }
 
-// vLLM-style P2P all-reduce kernel with GPU-only barriers
+// =============================================================================
+// vLLM-style P2P all-reduce kernel - OPTIMIZED VERSION
+// Template-based GPU count for compile-time loop unrolling
+// =============================================================================
+
+template <int ngpus>
+__global__ __launch_bounds__(512, 1)  // Match vLLM: 512 threads, 1 block per SM
+void pg_all_reduce_p2p_kernel_v2_opt
+(
+    P2PBarrier** __restrict__ barrier_ptr_array,
+    float4** __restrict__ p2p_ptr_array,
+    float4* __restrict__ output,
+    int rank,
+    int size  // Size in float4 elements
+)
+{
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + tid;
+
+    // Get my P2P buffer pointer
+    float4* my_p2p_ptr = p2p_ptr_array[rank];
+
+    // Phase 1: Copy local output to P2P buffer
+    for (int i = idx; i < size; i += gridDim.x * blockDim.x)
+    {
+        my_p2p_ptr[i] = output[i];
+    }
+
+    // Phase 2: Barrier - wait for all GPUs to finish writing
+    __threadfence_system();
+    p2p_barrier_start<ngpus>(barrier_ptr_array, rank);
+
+    // Phase 3: Reduce from all peers with compile-time unrolling
+    for (int i = idx; i < size; i += gridDim.x * blockDim.x)
+    {
+        // Load from first GPU
+        float4 sum = p2p_ptr_array[0][i];
+
+        // Accumulate from remaining GPUs (unrolled at compile time!)
+        #pragma unroll
+        for (int g = 1; g < ngpus; g++)
+        {
+            float4 val = p2p_ptr_array[g][i];
+            sum.x += val.x;
+            sum.y += val.y;
+            sum.z += val.z;
+            sum.w += val.w;
+        }
+
+        // Write result
+        output[i] = sum;
+    }
+
+    // Final barrier with release semantics (use final_sync=true for performance)
+    p2p_barrier_end<ngpus, true>(barrier_ptr_array, rank);
+}
+
+// Legacy kernel for backward compatibility (runtime GPU count)
 __global__ __launch_bounds__(MAX_NUM_THREADS)
 void pg_all_reduce_p2p_kernel_v2
 (
@@ -355,74 +412,36 @@ void pg_all_reduce_p2p_kernel_v2
     int this_device,
     uint8_t* __restrict__ data_ptr,
     const size_t data_size,
-    P2PBarrier** barrier_ptr_array,    // Pre-built compact array
-    float4** p2p_ptr_array,            // Pre-built compact array (float4* to avoid casts)
-    int num_ranks,                     // Pre-calculated
-    int this_rank                      // Pre-calculated
+    P2PBarrier** barrier_ptr_array,
+    float4** p2p_ptr_array,
+    int num_ranks,
+    int this_rank
 )
 {
     int t = threadIdx.x;
     if (num_ranks <= 1) return;
 
-    // Shared counter to limit error spam (only first few threads print errors)
-    __shared__ int error_count;
-    if (t == 0) error_count = 0;
-    __syncthreads();
-
-    // Validate our P2P pointer (direct from parameter, no shared memory needed)
     float4* my_p2p_ptr = p2p_ptr_array[this_rank];
-    if (!my_p2p_ptr)
-    {
-        // Only first 5 threads print errors to avoid spam
-        int my_error = atomicAdd(&error_count, 1);
-        if (my_error < 5) {
-            printf("ExLlamaV3: P2P ERROR - Device %d (rank %d) thread %d has no P2P pointer!\n",
-                   this_device, this_rank, t);
-            printf("ExLlamaV3: P2P ERROR - Attempted to access p2p_ptr_array[%d] which is NULL\n", this_rank);
-            if (my_error == 0) {
-                // First thread prints full array state
-                printf("ExLlamaV3: P2P ERROR - Full array state:\n");
-                for (int i = 0; i < num_ranks; ++i) {
-                    printf("  p2p_ptr_array[%d] = %p\n", i, p2p_ptr_array[i]);
-                }
-            }
-        }
-        __syncthreads();  // Ensure all threads see the error count
-        // Abort kernel after 5 errors (assert terminates kernel execution)
-        if (error_count >= 5) {
-            assert(false && "P2P validation failed - too many NULL pointers, aborting kernel");
-        }
-        return;  // Early return for threads without P2P pointer
-    }
 
     // Phase 1: Copy local data to P2P buffer
     for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
     {
-        // Use vec_idx for float4 array indexing (prevents 16x overrun bug)
         size_t vec_idx = offset / 16;
         my_p2p_ptr[vec_idx] = *((float4*)(data_ptr + offset));
     }
 
-    // Ensure all writes are visible system-wide
     __threadfence_system();
     __syncthreads();
 
-    // Phase 2: vLLM-style P2P barrier - wait for all GPUs (GPU-only, no CPU polling)
-    // Array already pre-built on host, no nested loops needed!
+    // Phase 2: Barrier
     p2p_barrier_vllm_style(barrier_ptr_array, this_rank, num_ranks, true);
 
-    // Phase 3: Reduce - read from all P2P buffers and accumulate using vectorized loads
-    // Single 128-bit load from each GPU (compiler generates ld.f32.v4)
-    // Direct access from p2p_ptr_array parameter, no casts needed
+    // Phase 3: Reduce
     for (size_t offset = t * 16; offset < data_size; offset += blockDim.x * 16)
     {
-        // Index in terms of float4 elements (16 bytes each)
         size_t vec_idx = offset / 16;
-
-        // Load from first GPU (direct from parameter, no cast)
         float4 sum = p2p_ptr_array[0][vec_idx];
 
-        // Accumulate from remaining GPUs (vectorized loads, no casts)
         for (int i = 1; i < num_ranks; ++i)
         {
             float4 val = p2p_ptr_array[i][vec_idx];
@@ -432,16 +451,11 @@ void pg_all_reduce_p2p_kernel_v2
             sum.w += val.w;
         }
 
-        // Write result back to local data (128-bit store)
         *((float4*)(data_ptr + offset)) = sum;
     }
 
-    // Ensure all threads finished writing
     __threadfence_system();
     __syncthreads();
-
-    // No final barrier needed - results written to local memory
-    // Other devices will read their own copies in Phase 3
 }
 
 __global__ __launch_bounds__(MAX_NUM_THREADS)
@@ -748,7 +762,6 @@ void pg_all_reduce_p2p_v2
             cached_p2p_ptrs.ptrs[i] = pg_get_p2p_ptr(i);
             if ((device_mask >> i) & 1 && !cached_p2p_ptrs.ptrs[i]) {
                 all_valid = false;
-                printf("ExLlamaV3: [Device %d] WARNING: P2P pointer for device %d is NULL\n", this_device, i);
             }
         }
 
@@ -757,7 +770,6 @@ void pg_all_reduce_p2p_v2
             cached_barrier_ptrs.barriers[i] = pg_get_p2p_barrier_ptr(i);
             if ((device_mask >> i) & 1 && !cached_barrier_ptrs.barriers[i]) {
                 all_valid = false;
-                printf("ExLlamaV3: [Device %d] WARNING: Barrier pointer for device %d is NULL\n", this_device, i);
             }
         }
 
@@ -766,25 +778,22 @@ void pg_all_reduce_p2p_v2
             int idx = 0;
             for (int bit = 0; bit < MAX_DEVICES; ++bit) {
                 if ((device_mask >> bit) & 1) {
-                    cached_barrier_array[this_device][idx] = (P2PBarrier*)cached_barrier_ptrs.barriers[bit];  // Store in this device's row
-                    cached_p2p_ptr_array[this_device][idx] = (float4*)cached_p2p_ptrs.ptrs[bit];              // Store in this device's row
+                    cached_barrier_array[this_device][idx] = (P2PBarrier*)cached_barrier_ptrs.barriers[bit];
+                    cached_p2p_ptr_array[this_device][idx] = (float4*)cached_p2p_ptrs.ptrs[bit];
                     idx++;
                 }
             }
             cached_num_ranks = num_ranks;
-            cached_this_rank[this_device] = __builtin_popcount(device_mask & ((1 << this_device) - 1));  // Store THIS device's rank
+            cached_this_rank[this_device] = __builtin_popcount(device_mask & ((1 << this_device) - 1));
 
-            p2p_v2_validated[this_device] = true;  // Mark THIS device as validated
-            printf("ExLlamaV3: [Device %d] P2P v2: Pre-registered buffers validated (rank=%d/%d)\n",
-                   this_device, cached_this_rank[this_device], cached_num_ranks);
+            p2p_v2_validated[this_device] = true;
 
-            // Trace: Log all pointers in this device's compact arrays
-            printf("ExLlamaV3: [Device %d] P2P v2: Compact P2P pointer array:\n", this_device);
-            for (int i = 0; i < cached_num_ranks; ++i) {
-                printf("  [%d] = %p\n", i, cached_p2p_ptr_array[this_device][i]);
+            // Only log on device 0 to avoid spam
+            if (this_device == 0) {
+                printf("ExLlamaV3: P2P v2 optimized: %d GPUs validated\n", (int)num_ranks);
             }
         } else {
-            printf("ExLlamaV3: [Device %d] P2P v2 ERROR: Not all pointers available. EXLLAMA_TP_P2P=1 requires all P2P handles to be opened.\n", this_device);
+            printf("ExLlamaV3: [Device %d] P2P v2 ERROR: Not all pointers available\n", this_device);
             TORCH_CHECK(false, "P2P validation failed - EXLLAMA_TP_P2P=1 requires all P2P handles to be opened");
         }
     }
@@ -798,37 +807,64 @@ void pg_all_reduce_p2p_v2
         return;
     }
 
-    // Launch v2 kernel with GPU-only barriers
-    int threads = MAX_NUM_THREADS;
-    if (data_size < threads * 16) threads = CEIL_DIVIDE(data_size, 16);
-    threads = ((threads + 31) / 32) * 32;
-
-    // Prepare temporary variables for kernel args (CUDA kernelArgs needs pointers to values)
+    // Prepare kernel arguments
     P2PBarrier** temp_barrier_array = cached_barrier_array[this_device];
     float4** temp_p2p_array = cached_p2p_ptr_array[this_device];
+    float4* output_ptr = (float4*)data_ptr;
+    int size_in_float4 = data_size / 16;  // Size in float4 elements
+    int this_rank = cached_this_rank[this_device];
 
-    void* kernelArgs[] =
-    {
-        (void*)& ctx,
-        (void*)& device_mask,
-        (void*)& this_device,
-        (void*)& data_ptr,
-        (void*)& data_size,
-        (void*)& temp_barrier_array,  // Pointer to variable holding the pointer array
-        (void*)& temp_p2p_array,      // Pointer to variable holding the pointer array
-        (void*)& cached_num_ranks,    // Pre-calculated
-        (void*)& cached_this_rank[this_device]  // CRITICAL: THIS device's rank
-    };
+    // Use optimized kernel with template-based GPU count for loop unrolling
+    // Launch with multiple blocks (up to 36, like vLLM) for better SM utilization
+    const int threads = 512;  // Match vLLM
+    const int max_blocks = 36;  // Match vLLM
+    int blocks = std::min(max_blocks, (size_in_float4 + threads - 1) / threads);
+    blocks = std::max(1, blocks);
 
-    cudaLaunchCooperativeKernel
-    (
-        (void*)pg_all_reduce_p2p_kernel_v2,
-        dim3(1),
-        dim3(threads),
-        kernelArgs,
-        0,  // No shared memory needed (direct parameter access)
-        stream
-    );
+    // Dispatch based on GPU count for compile-time unrolling
+    #define LAUNCH_KERNEL(ngpus) \
+        pg_all_reduce_p2p_kernel_v2_opt<ngpus><<<blocks, threads, 0, stream>>>( \
+            temp_barrier_array, temp_p2p_array, output_ptr, this_rank, size_in_float4)
+
+    switch (num_ranks) {
+        case 2: LAUNCH_KERNEL(2); break;
+        case 3: LAUNCH_KERNEL(3); break;
+        case 4: LAUNCH_KERNEL(4); break;
+        case 5: LAUNCH_KERNEL(5); break;
+        case 6: LAUNCH_KERNEL(6); break;
+        case 7: LAUNCH_KERNEL(7); break;
+        case 8: LAUNCH_KERNEL(8); break;
+        default:
+            // Fallback to legacy kernel for unsupported GPU counts
+            {
+                int legacy_threads = MAX_NUM_THREADS;
+                if (data_size < legacy_threads * 16) legacy_threads = CEIL_DIVIDE(data_size, 16);
+                legacy_threads = ((legacy_threads + 31) / 32) * 32;
+
+                void* kernelArgs[] = {
+                    (void*)& ctx,
+                    (void*)& device_mask,
+                    (void*)& this_device,
+                    (void*)& data_ptr,
+                    (void*)& data_size,
+                    (void*)& temp_barrier_array,
+                    (void*)& temp_p2p_array,
+                    (void*)& cached_num_ranks,
+                    (void*)& cached_this_rank[this_device]
+                };
+
+                cudaLaunchCooperativeKernel(
+                    (void*)pg_all_reduce_p2p_kernel_v2,
+                    dim3(1),
+                    dim3(legacy_threads),
+                    kernelArgs,
+                    0,
+                    stream
+                );
+            }
+            break;
+    }
+    #undef LAUNCH_KERNEL
 
     cuda_check(cudaPeekAtLastError());
 }
