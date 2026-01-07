@@ -48,7 +48,6 @@
 #include "libtorch/gated_rmsnorm.h"
 #include "libtorch/mlp.h"
 #include "libtorch/blocksparse_mlp.h"
-#include "libtorch/attn.h"
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
@@ -163,5 +162,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     #include "libtorch/gated_rmsnorm_bc.h"
     #include "libtorch/mlp_bc.h"
     #include "libtorch/blocksparse_mlp_bc.h"
-    #include "libtorch/attn_bc.h"
 }
