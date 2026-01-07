@@ -726,7 +726,7 @@ void pg_all_reduce_p2p_v2
     static P2PBarrier* cached_barrier_array[MAX_DEVICES][MAX_DEVICES];  // [this_device][rank] - per-device cache
     static float4* cached_p2p_ptr_array[MAX_DEVICES][MAX_DEVICES];      // [this_device][rank] - per-device cache
     static int cached_num_ranks = 0;  // Same for all devices, no need for array
-    static int cached_this_rank = 0;  // Each device knows its rank, no need for array
+    static int cached_this_rank[MAX_DEVICES];  // CRITICAL: Each device stores its OWN rank!
 
     // Validate once and cache (no retries - fail fast if P2P handles not opened)
     if (!p2p_v2_validated)
@@ -762,11 +762,11 @@ void pg_all_reduce_p2p_v2
                 }
             }
             cached_num_ranks = num_ranks;
-            cached_this_rank = __builtin_popcount(device_mask & ((1 << this_device) - 1));
+            cached_this_rank[this_device] = __builtin_popcount(device_mask & ((1 << this_device) - 1));  // Store THIS device's rank
 
             p2p_v2_validated = true;
             printf("ExLlamaV3: [Device %d] P2P v2: Pre-registered buffers validated (rank=%d/%d)\n",
-                   this_device, cached_this_rank, cached_num_ranks);
+                   this_device, cached_this_rank[this_device], cached_num_ranks);
 
             // Trace: Log all pointers in this device's compact arrays
             printf("ExLlamaV3: [Device %d] P2P v2: Compact P2P pointer array:\n", this_device);
@@ -803,7 +803,7 @@ void pg_all_reduce_p2p_v2
         (void*)cached_barrier_array[this_device],  // This device's barrier row (decays to P2PBarrier**)
         (void*)cached_p2p_ptr_array[this_device],  // This device's P2P row (decays to float4**)
         (void*)& cached_num_ranks,                // Pre-calculated
-        (void*)& cached_this_rank                 // Pre-calculated
+        (void*)& cached_this_rank[this_device]     // CRITICAL: THIS device's rank, not some other device's!
     };
 
     cudaLaunchCooperativeKernel
