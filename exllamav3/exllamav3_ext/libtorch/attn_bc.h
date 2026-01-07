@@ -1,3 +1,9 @@
+#pragma once
+
+#include "attn.h"
+#include <pybind11/pybind11.h>
+namespace py = pybind11;
+
 py::class_<BC_Attention, std::shared_ptr<BC_Attention>>(m, "BC_Attention")
     .def(
         py::init<
