@@ -60,26 +60,55 @@ class TransformerBlock(Module):
         out_dtype: torch.dtype | None = None
     ) -> torch.Tensor:
 
+        # Set prefill mode based on params
+        is_prefill = params.get("prefill", True)
+        set_prefill_mode(is_prefill)
+
         if self.attn:
-            if self.attn_norm:
-                y = self.attn_norm.forward(x, params, out_dtype = torch.half)
-            else:
-                y = x.half()
-            y = self.attn.forward(y, params)
-            if params.get("prefill"): return x
-            if self.attn_post_norm:
-                y = self.attn_post_norm.forward(y, params)
-            x += y
+            # Attention norm
+            with timed_operation("attn_norm", "forward"):
+                if self.attn_norm:
+                    y = self.attn_norm.forward(x, params, out_dtype = torch.half)
+                else:
+                    y = x.half()
+
+            # Attention
+            with timed_operation("attn", "forward"):
+                y = self.attn.forward(y, params)
+
+            # Early return during prefill (after attention)
+            if is_prefill:
+                return x
+
+            # Attention post-norm
+            with timed_operation("attn_post_norm", "forward"):
+                if self.attn_post_norm:
+                    y = self.attn_post_norm.forward(y, params)
+
+            # Residual connection
+            with timed_operation("residual", "attn_add"):
+                x += y
 
         if self.mlp:
-            if self.mlp_norm:
-                y = self.mlp_norm.forward(x, params, out_dtype = torch.half)
-            else:
-                y = x.half()
-            y = self.mlp.forward(y, params)
-            if self.mlp_post_norm:
-                y = self.mlp_post_norm.forward(y, params)
-            x += y
+            # MLP norm
+            with timed_operation("mlp_norm", "forward"):
+                if self.mlp_norm:
+                    y = self.mlp_norm.forward(x, params, out_dtype = torch.half)
+                else:
+                    y = x.half()
+
+            # MLP
+            with timed_operation("mlp", "forward"):
+                y = self.mlp.forward(y, params)
+
+            # MLP post-norm
+            with timed_operation("mlp_post_norm", "forward"):
+                if self.mlp_post_norm:
+                    y = self.mlp_post_norm.forward(y, params)
+
+            # Residual connection
+            with timed_operation("residual", "mlp_add"):
+                x += y
 
         return to2(x, out_dtype, self.out_dtype)
 
