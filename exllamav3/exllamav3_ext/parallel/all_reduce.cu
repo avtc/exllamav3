@@ -364,27 +364,35 @@ void pg_all_reduce_p2p_kernel_v2
     int t = threadIdx.x;
     if (num_ranks <= 1) return;
 
-    // Trace: Log kernel parameters (all threads to see which ones fail)
-    printf("ExLlamaV3: [Device %d kernel T%d] device_mask=0x%x, this_rank=%d/%d, data_size=%zu, p2p_ptr_array=%p\n",
-           this_device, t, device_mask, this_rank, num_ranks, data_size, p2p_ptr_array);
-
-    if (t == 0) {
-        printf("ExLlamaV3: [Device %d kernel] P2P pointer array received:\n", this_device);
-        for (int i = 0; i < num_ranks; ++i) {
-            printf("  p2p_ptr_array[%d] = %p\n", i, p2p_ptr_array[i]);
-        }
-    }
+    // Shared counter to limit error spam (only first few threads print errors)
+    __shared__ int error_count;
+    if (t == 0) error_count = 0;
+    __syncthreads();
 
     // Validate our P2P pointer (direct from parameter, no shared memory needed)
     float4* my_p2p_ptr = p2p_ptr_array[this_rank];
     if (!my_p2p_ptr)
     {
-        printf("ExLlamaV3: P2P ERROR - Device %d (rank %d) thread %d has no P2P pointer!\n", this_device, this_rank, t);
-        printf("ExLlamaV3: P2P ERROR - Attempted to access p2p_ptr_array[%d] which is NULL\n", this_rank);
-        printf("ExLlamaV3: P2P ERROR - This is a fatal error. Aborting kernel.\n");
-        // Explicitly fail - don't silently return
-        //assert(my_p2p_ptr != nullptr && "P2P pointer is null - check P2P handle initialization");
-        return;  // Will never reach here due to assert
+        // Only first 5 threads print errors to avoid spam
+        int my_error = atomicAdd(&error_count, 1);
+        if (my_error < 5) {
+            printf("ExLlamaV3: P2P ERROR - Device %d (rank %d) thread %d has no P2P pointer!\n",
+                   this_device, this_rank, t);
+            printf("ExLlamaV3: P2P ERROR - Attempted to access p2p_ptr_array[%d] which is NULL\n", this_rank);
+            if (my_error == 0) {
+                // First thread prints full array state
+                printf("ExLlamaV3: P2P ERROR - Full array state:\n");
+                for (int i = 0; i < num_ranks; ++i) {
+                    printf("  p2p_ptr_array[%d] = %p\n", i, p2p_ptr_array[i]);
+                }
+            }
+        }
+        __syncthreads();  // Ensure all threads see the error count
+        // Abort kernel after 5 errors (assert terminates kernel execution)
+        if (error_count >= 5) {
+            assert(false && "P2P validation failed - too many NULL pointers, aborting kernel");
+        }
+        return;  // Early return for threads without P2P pointer
     }
 
     // Phase 1: Copy local data to P2P buffer
@@ -720,7 +728,7 @@ void pg_all_reduce_p2p_v2
     if (num_ranks <= 1) return;
 
     // Pre-register P2P buffers using static caching (per-device)
-    static bool p2p_v2_validated = false;
+    static bool p2p_v2_validated[MAX_DEVICES] = {false};  // CRITICAL: Per-device validation flag!
     static P2PPtrs cached_p2p_ptrs;
     static P2PBarrierPtrs cached_barrier_ptrs;
     static P2PBarrier* cached_barrier_array[MAX_DEVICES][MAX_DEVICES];  // [this_device][rank] - per-device cache
@@ -729,7 +737,7 @@ void pg_all_reduce_p2p_v2
     static int cached_this_rank[MAX_DEVICES];  // CRITICAL: Each device stores its OWN rank!
 
     // Validate once and cache (no retries - fail fast if P2P handles not opened)
-    if (!p2p_v2_validated)
+    if (!p2p_v2_validated[this_device])
     {
         bool all_valid = true;
 
@@ -764,7 +772,7 @@ void pg_all_reduce_p2p_v2
             cached_num_ranks = num_ranks;
             cached_this_rank[this_device] = __builtin_popcount(device_mask & ((1 << this_device) - 1));  // Store THIS device's rank
 
-            p2p_v2_validated = true;
+            p2p_v2_validated[this_device] = true;  // Mark THIS device as validated
             printf("ExLlamaV3: [Device %d] P2P v2: Pre-registered buffers validated (rank=%d/%d)\n",
                    this_device, cached_this_rank[this_device], cached_num_ranks);
 
