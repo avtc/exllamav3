@@ -15,6 +15,10 @@ _enabled = os.environ.get("EXLLAMA_TIMING", "0") == "1"
 _stats = defaultdict(lambda: {"total_ns": 0, "count": 0})
 _in_prefill = True  # Start in prefill mode, ignore timing until first decode
 
+# Print debug message when enabled
+if _enabled:
+    print("[TIMING] Timing enabled - summary will be printed after each generation")
+
 def is_enabled():
     """Check if timing is enabled."""
     return _enabled
@@ -22,6 +26,8 @@ def is_enabled():
 def set_prefill_mode(is_prefill: bool):
     """Set prefill mode. Timing is only accumulated during decode mode."""
     global _in_prefill
+    if _in_prefill != is_prefill and _enabled:
+        print(f"[TIMING] Prefill mode: {is_prefill}")
     _in_prefill = is_prefill
 
 def record_timing(category: str, operation: str, duration_ns: int):
@@ -43,12 +49,17 @@ def record_timing(category: str, operation: str, duration_ns: int):
 
 def print_summary():
     """Print summary statistics sorted by total time (descending)."""
-    if not _enabled or not _stats:
+    if not _enabled:
         return
 
     print("\n" + "="*80)
     print("TIMING SUMMARY (Decoding Stage Only - Sorted by Total Time)")
     print("="*80)
+
+    if not _stats:
+        print("No timing data collected (still in prefill mode or no decode operations)")
+        print("="*80 + "\n")
+        return
 
     # Sort by total time (descending)
     sorted_stats = sorted(_stats.items(), key=lambda x: x[1]["total_ns"], reverse=True)

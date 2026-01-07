@@ -869,6 +869,9 @@ class Generator:
             completions = completions[0]
             last_results = last_results[0]
 
+        # Print timing summary after each generation
+        print_summary()
+
         if return_last_results:
             return completions, last_results
         else:
