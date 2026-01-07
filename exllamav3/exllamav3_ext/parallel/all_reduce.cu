@@ -751,46 +751,42 @@ void pg_all_reduce_p2p_v2
 
     if (num_ranks <= 1) return;
 
-    // Build struct of barrier pointers (one per device)
-    P2PBarrierPtrs barrier_ptrs;
-    bool all_barriers_valid = true;
-    int barrier_count = 0;
-    for (int i = 0; i < MAX_DEVICES; ++i)
+    // Pre-register P2P buffers using static caching (similar to pg_all_reduce lines 565-668)
+    static bool p2p_v2_validated = false;
+    static P2PPtrs cached_p2p_ptrs;
+    static P2PBarrierPtrs cached_barrier_ptrs;
+    static int validation_attempts = 0;
+
+    // Validate once and cache (no retries - fail fast if P2P handles not opened)
+    if (!p2p_v2_validated && validation_attempts < 1)
     {
-        barrier_ptrs.barriers[i] = pg_get_p2p_barrier_ptr(i);
-        if ((device_mask >> i) & 1)
-        {
-            barrier_count++;
-            if (!barrier_ptrs.barriers[i])
-            {
-                all_barriers_valid = false;
-                printf("ExLlamaV3: [Device %d] P2P v2: Missing barrier for device %d\n", this_device, i);
+        bool all_valid = true;
+
+        // Cache P2P pointers
+        for (int i = 0; i < MAX_DEVICES; ++i) {
+            cached_p2p_ptrs.ptrs[i] = pg_get_p2p_ptr(i);
+            if ((device_mask >> i) & 1 && !cached_p2p_ptrs.ptrs[i]) {
+                all_valid = false;
             }
         }
-    }
 
-    if (!all_barriers_valid)
-    {
-        printf("ExLlamaV3: [Device %d] P2P v2: Not all barrier pointers available, falling back\n", this_device);
-        return;
-    }
-
-    // Collect P2P pointers (only for active devices)
-    P2PPtrs p2p_ptrs;
-    bool all_valid = true;
-    for (int i = 0; i < MAX_DEVICES; ++i)
-    {
-        p2p_ptrs.ptrs[i] = pg_get_p2p_ptr(i);
-        if ((device_mask >> i) & 1 && !p2p_ptrs.ptrs[i])
-        {
-            all_valid = false;
+        // Cache barrier pointers
+        for (int i = 0; i < MAX_DEVICES; ++i) {
+            cached_barrier_ptrs.barriers[i] = pg_get_p2p_barrier_ptr(i);
+            if ((device_mask >> i) & 1 && !cached_barrier_ptrs.barriers[i]) {
+                all_valid = false;
+            }
         }
-    }
 
-    if (!all_valid)
-    {
-        printf("ExLlamaV3: [Device %d] P2P v2: Some peer pointers missing, falling back\n", this_device);
-        return;
+        validation_attempts++;
+
+        if (all_valid) {
+            p2p_v2_validated = true;
+            printf("ExLlamaV3: [Device %d] P2P v2: Pre-registered buffers validated\n", this_device);
+        } else {
+            printf("ExLlamaV3: [Device %d] P2P v2 ERROR: Not all pointers available. EXLLAMA_TP_P2P=1 requires all P2P handles to be opened.\n", this_device);
+            TORCH_CHECK(false, "P2P validation failed - EXLLAMA_TP_P2P=1 requires all P2P handles to be opened");
+        }
     }
 
     // Check data size fits in P2P buffer
@@ -814,8 +810,8 @@ void pg_all_reduce_p2p_v2
         (void*)& this_device,
         (void*)& data_ptr,
         (void*)& data_size,
-        (void*)& barrier_ptrs,  // Array of barrier pointers
-        (void*)& p2p_ptrs
+        (void*)& cached_barrier_ptrs,  // Pre-registered barrier pointers
+        (void*)& cached_p2p_ptrs       // Pre-registered P2P pointers
     };
 
     cudaLaunchCooperativeKernel
